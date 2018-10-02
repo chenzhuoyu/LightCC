@@ -92,6 +92,7 @@ typedef enum _lcc_operator_t
     LCC_OP_COMMA,           /* Comma            ,   */
     LCC_OP_POINT,           /* Point            .   */
     LCC_OP_SEMICOLON,       /* Semicolon        ;   */
+    LCC_OP_DEREF,           /* Dereferencing    ->  */
 } lcc_operator_t;
 
 typedef enum _lcc_literal_type_t
