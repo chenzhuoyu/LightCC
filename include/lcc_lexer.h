@@ -88,7 +88,7 @@ typedef enum _lcc_operator_t
     LCC_OP_IOR,             /* Inplace-BOR      |=  */
     LCC_OP_QUESTION,        /* Question-mark    ?   */
     LCC_OP_LBRACKET,        /* Left-bracket     (   */
-    LCC_OP_RBRACKET,        /* Right-bracket    (   */
+    LCC_OP_RBRACKET,        /* Right-bracket    )   */
     LCC_OP_LINDEX,          /* Left-index       [   */
     LCC_OP_RINDEX,          /* Right-index      ]   */
     LCC_OP_LBLOCK,          /* Left-block       {   */
@@ -146,7 +146,9 @@ typedef struct _lcc_literal_t
 
 typedef struct _lcc_token_t
 {
-    lcc_token_type_t type;
+    struct _lcc_token_t *prev;
+    struct _lcc_token_t *next;
+    lcc_token_type_t     type;
 
     union
     {
@@ -159,23 +161,24 @@ typedef struct _lcc_token_t
 
 void lcc_token_free(lcc_token_t *self);
 void lcc_token_init(lcc_token_t *self);
+void lcc_token_attach(lcc_token_t *self, lcc_token_t *next);
 
-void lcc_token_set_eof          (lcc_token_t *self);
-void lcc_token_set_ident        (lcc_token_t *self, lcc_string_t       *ident);
-void lcc_token_set_keyword      (lcc_token_t *self, lcc_keyword_t       keyword);
-void lcc_token_set_operator     (lcc_token_t *self, lcc_operator_t      operator);
+lcc_token_t *lcc_token_from_eof          (void);
+lcc_token_t *lcc_token_from_ident        (lcc_string_t       *ident);
+lcc_token_t *lcc_token_from_keyword      (lcc_keyword_t       keyword);
+lcc_token_t *lcc_token_from_operator     (lcc_operator_t      operator);
 
-void lcc_token_set_int          (lcc_token_t *self, int                 value);
-void lcc_token_set_long         (lcc_token_t *self, long                value);
-void lcc_token_set_longlong     (lcc_token_t *self, long long           value);
-void lcc_token_set_uint         (lcc_token_t *self, unsigned int        value);
-void lcc_token_set_ulong        (lcc_token_t *self, unsigned long       value);
-void lcc_token_set_ulonglong    (lcc_token_t *self, unsigned long long  value);
-void lcc_token_set_float        (lcc_token_t *self, float               value);
-void lcc_token_set_double       (lcc_token_t *self, double              value);
-void lcc_token_set_longdouble   (lcc_token_t *self, long double         value);
-void lcc_token_set_char         (lcc_token_t *self, lcc_string_t       *value);
-void lcc_token_set_string       (lcc_token_t *self, lcc_string_t       *value);
+lcc_token_t *lcc_token_from_int          (int                 value);
+lcc_token_t *lcc_token_from_long         (long                value);
+lcc_token_t *lcc_token_from_longlong     (long long           value);
+lcc_token_t *lcc_token_from_uint         (unsigned int        value);
+lcc_token_t *lcc_token_from_ulong        (unsigned long       value);
+lcc_token_t *lcc_token_from_ulonglong    (unsigned long long  value);
+lcc_token_t *lcc_token_from_float        (float               value);
+lcc_token_t *lcc_token_from_double       (double              value);
+lcc_token_t *lcc_token_from_longdouble   (long double         value);
+lcc_token_t *lcc_token_from_char         (lcc_string_t       *value);
+lcc_token_t *lcc_token_from_string       (lcc_string_t       *value);
 
 /*** Source File ***/
 
@@ -220,14 +223,35 @@ typedef enum _lcc_lexer_state_t
     LCC_LX_STATE_POP_FILE,
     LCC_LX_STATE_NEXT_LINE,
     LCC_LX_STATE_NEXT_LINE_CONT,
-    LCC_LX_STATE_ADVANCE,
+    LCC_LX_STATE_GOT_CHAR,
+    LCC_LX_STATE_GOT_DIRECTIVE,
+    LCC_LX_STATE_COMMIT,
     LCC_LX_STATE_ACCEPT,
+    LCC_LX_STATE_ACCEPT_KEEP,
     LCC_LX_STATE_REJECT,
 } lcc_lexer_state_t;
 
 typedef enum _lcc_lexer_substate_t
 {
     LCC_LX_SUBSTATE_NULL,
+    LCC_LX_SUBSTATE_NAME,
+    LCC_LX_SUBSTATE_CHARS,
+    LCC_LX_SUBSTATE_NUMBER,
+    LCC_LX_SUBSTATE_STRING,
+    LCC_LX_SUBSTATE_OPERATOR_PLUS,
+    LCC_LX_SUBSTATE_OPERATOR_MINUS,
+    LCC_LX_SUBSTATE_OPERATOR_STAR,
+    LCC_LX_SUBSTATE_OPERATOR_SLASH,
+    LCC_LX_SUBSTATE_OPERATOR_PERCENT,
+    LCC_LX_SUBSTATE_OPERATOR_EQU,
+    LCC_LX_SUBSTATE_OPERATOR_GT,
+    LCC_LX_SUBSTATE_OPERATOR_GT_GT,
+    LCC_LX_SUBSTATE_OPERATOR_LT,
+    LCC_LX_SUBSTATE_OPERATOR_LT_LT,
+    LCC_LX_SUBSTATE_OPERATOR_EXCL,
+    LCC_LX_SUBSTATE_OPERATOR_AMP,
+    LCC_LX_SUBSTATE_OPERATOR_BAR,
+    LCC_LX_SUBSTATE_OPERATOR_CARET,
 } lcc_lexer_substate_t;
 
 typedef enum _lcc_lexer_error_type_t
@@ -247,27 +271,43 @@ typedef char (*lcc_lexer_on_error_fn)(
     void                    *data
 );
 
-#define LCC_LXF_EOL         0x00000001      /* End-Of-Line encountered */
-#define LCC_LXF_EOF         0x00000002      /* End-Of-File encountered */
-#define LCC_LXF_EOS         0x00000004      /* End-Of-Source encountered */
+#define LCC_LXF_EOL         0x0000000000000001      /* End-Of-Line encountered */
+#define LCC_LXF_EOF         0x0000000000000002      /* End-Of-File encountered */
+#define LCC_LXF_END         0x0000000000000003      /* EOF or EOL encountered */
+
+#define LCC_LXF_EOS         0x0000000000000004      /* End-Of-Source encountered */
+#define LCC_LXF_DIRECTIVE   0x0000000000000008      /* parsing compiler directive */
+#define LCC_LXF_MASK        0x00000000ffffffff      /* lexer flags mask */
+
+#define LCC_LXDN_INCLUDE    0x0000000100000000      /* #include directive */
+#define LCC_LXDN_DEFINE     0x0000000200000000      /* #define directive */
+#define LCC_LXDN_UNDEF      0x0000000800000000      /* #undef directive */
+#define LCC_LXDN_IF         0x0000001000000000      /* #if directive */
+#define LCC_LXDN_IFDEF      0x0000002000000000      /* #ifdef directive */
+#define LCC_LXDN_IFNDEF     0x0000004000000000      /* #ifndef directive */
+#define LCC_LXDN_ELSE       0x0000008000000000      /* #else directive */
+#define LCC_LXDN_ENDIF      0x0000010000000000      /* #endif directive */
+#define LCC_LXDN_PRAGMA     0x0000020000000000      /* #pragma directive */
+#define LCC_LXDN_MASK       0x00000fff00000000      /* compiler directive name mask */
 
 typedef struct _lcc_lexer_t
 {
     /* lexer tables */
+    int gnuext;
     lcc_map_t psyms;
     lcc_array_t files;
     lcc_string_array_t include_paths;
     lcc_string_array_t library_paths;
 
     /* state machine */
-    int flags;
+    long flags;
     lcc_lexer_state_t state;
     lcc_lexer_substate_t substate;
 
     /* current file and token */
     char ch;
     lcc_file_t *file;
-    lcc_token_t token;
+    lcc_token_t tokens;
     lcc_token_buffer_t token_buffer;
 
     /* error handling */
@@ -275,14 +315,20 @@ typedef struct _lcc_lexer_t
     lcc_lexer_on_error_fn error_fn;
 } lcc_lexer_t;
 
+typedef enum _lcc_lexer_gnu_ext_t
+{
+    LCC_LX_GNUX_DOLLAR_IDENT = 0x00000001,      /* allow the dollar sign character '$' in identifiers */
+} lcc_lexer_gnu_ext_t;
+
 void lcc_lexer_free(lcc_lexer_t *self);
 char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file);
-char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token);
+char lcc_lexer_next(lcc_lexer_t *self);
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value);
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);
 void lcc_lexer_add_library_path(lcc_lexer_t *self, const char *path);
 
+void lcc_lexer_set_gnu_ext(lcc_lexer_t *self, lcc_lexer_gnu_ext_t name, char enabled);
 void lcc_lexer_set_error_handler(lcc_lexer_t *self, lcc_lexer_on_error_fn error_fn, void *data);
 
 #endif /* LCC_LEXER_H */

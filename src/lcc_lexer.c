@@ -1,6 +1,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <libgen.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,173 +11,234 @@
 
 void lcc_token_free(lcc_token_t *self)
 {
-    switch (self->type)
+    if (self)
     {
-        case LCC_TK_EOF:
-            break;
-
-        case LCC_TK_IDENT:
+        switch (self->type)
         {
-            lcc_string_unref(self->ident);
-            break;
-        }
+            case LCC_TK_EOF:
+                break;
 
-        case LCC_TK_LITERAL:
-        {
-            switch (self->literal.type)
+            case LCC_TK_IDENT:
             {
-                case LCC_LT_INT:
-                case LCC_LT_LONG:
-                case LCC_LT_LONGLONG:
-                case LCC_LT_UINT:
-                case LCC_LT_ULONG:
-                case LCC_LT_ULONGLONG:
-                case LCC_LT_FLOAT:
-                case LCC_LT_DOUBLE:
-                case LCC_LT_LONGDOUBLE:
-                    break;
-
-                case LCC_LT_CHAR:
-                {
-                    lcc_string_unref(self->literal.v_char);
-                    break;
-                }
-
-                case LCC_LT_STRING:
-                {
-                    lcc_string_unref(self->literal.v_string);
-                    break;
-                }
+                lcc_string_unref(self->ident);
+                break;
             }
 
-            break;
+            case LCC_TK_LITERAL:
+            {
+                switch (self->literal.type)
+                {
+                    case LCC_LT_INT:
+                    case LCC_LT_LONG:
+                    case LCC_LT_LONGLONG:
+                    case LCC_LT_UINT:
+                    case LCC_LT_ULONG:
+                    case LCC_LT_ULONGLONG:
+                    case LCC_LT_FLOAT:
+                    case LCC_LT_DOUBLE:
+                    case LCC_LT_LONGDOUBLE:
+                        break;
+
+                    case LCC_LT_CHAR:
+                    {
+                        lcc_string_unref(self->literal.v_char);
+                        break;
+                    }
+
+                    case LCC_LT_STRING:
+                    {
+                        lcc_string_unref(self->literal.v_string);
+                        break;
+                    }
+                }
+
+                break;
+            }
+
+            case LCC_TK_KEYWORD:
+            case LCC_TK_OPERATOR:
+                break;
         }
 
-        case LCC_TK_KEYWORD:
-        case LCC_TK_OPERATOR:
-            break;
+        self->prev->next = self->next;
+        self->next->prev = self->prev;
+        free(self);
     }
 }
 
 void lcc_token_init(lcc_token_t *self)
 {
-    memset(self, 0, sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_EOF;
 }
 
-void lcc_token_set_eof(lcc_token_t *self)
+void lcc_token_attach(lcc_token_t *self, lcc_token_t *tail)
 {
-    lcc_token_free(self);
-    self->type = LCC_TK_EOF;
+    tail->next = self;
+    tail->prev = self->prev;
+    self->prev->next = tail;
+    self->prev = tail;
 }
 
-void lcc_token_set_ident(lcc_token_t *self, lcc_string_t *ident)
+lcc_token_t *lcc_token_from_eof(void)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
+    self->type = LCC_TK_EOF;
+    return self;
+}
+
+lcc_token_t *lcc_token_from_ident(lcc_string_t *ident)
+{
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_IDENT;
     self->ident = ident;
+    return self;
 }
 
-void lcc_token_set_keyword(lcc_token_t *self, lcc_keyword_t keyword)
+lcc_token_t *lcc_token_from_keyword(lcc_keyword_t keyword)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_KEYWORD;
     self->keyword = keyword;
+    return self;
 }
 
-void lcc_token_set_operator(lcc_token_t *self, lcc_operator_t operator)
+lcc_token_t *lcc_token_from_operator(lcc_operator_t operator)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_OPERATOR;
     self->operator = operator;
+    return self;
 }
 
-void lcc_token_set_int(lcc_token_t *self, int value)
+lcc_token_t *lcc_token_from_int(int value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_INT;
     self->literal.v_int = value;
+    return self;
 }
 
-void lcc_token_set_long(lcc_token_t *self, long value)
+lcc_token_t *lcc_token_from_long(long value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_LONG;
     self->literal.v_long = value;
+    return self;
 }
 
-void lcc_token_set_longlong(lcc_token_t *self, long long value)
+lcc_token_t *lcc_token_from_longlong(long long value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_LONGLONG;
     self->literal.v_longlong = value;
+    return self;
 }
 
-void lcc_token_set_uint(lcc_token_t *self, unsigned int value)
+lcc_token_t *lcc_token_from_uint(unsigned int value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_UINT;
     self->literal.v_uint = value;
+    return self;
 }
 
-void lcc_token_set_ulong(lcc_token_t *self, unsigned long value)
+lcc_token_t *lcc_token_from_ulong(unsigned long value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_ULONG;
     self->literal.v_ulong = value;
+    return self;
 }
 
-void lcc_token_set_ulonglong(lcc_token_t *self, unsigned long long value)
+lcc_token_t *lcc_token_from_ulonglong(unsigned long long value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_ULONGLONG;
     self->literal.v_ulonglong = value;
+    return self;
 }
 
-void lcc_token_set_float(lcc_token_t *self, float value)
+lcc_token_t *lcc_token_from_float(float value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_FLOAT;
     self->literal.v_float = value;
+    return self;
 }
 
-void lcc_token_set_double(lcc_token_t *self, double value)
+lcc_token_t *lcc_token_from_double(double value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_DOUBLE;
     self->literal.v_double = value;
+    return self;
 }
 
-void lcc_token_set_longdouble(lcc_token_t *self, long double value)
+lcc_token_t *lcc_token_from_longdouble(long double value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_LONGDOUBLE;
     self->literal.v_longdouble = value;
+    return self;
 }
 
-void lcc_token_set_char(lcc_token_t *self, lcc_string_t *value)
+lcc_token_t *lcc_token_from_char(lcc_string_t *value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_CHAR;
     self->literal.v_char = value;
+    return self;
 }
 
-void lcc_token_set_string(lcc_token_t *self, lcc_string_t *value)
+lcc_token_t *lcc_token_from_string(lcc_string_t *value)
 {
-    lcc_token_free(self);
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
     self->type = LCC_TK_LITERAL;
     self->literal.type = LCC_LT_STRING;
     self->literal.v_string = value;
+    return self;
 }
 
 /*** Source File ***/
@@ -331,6 +393,25 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
+typedef struct __lcc_directive_bits_t
+{
+    long bits;
+    const char *name;
+} _lcc_directive_bits_t;
+
+static const _lcc_directive_bits_t DIRECTIVES[] = {
+    { LCC_LXDN_INCLUDE , "include" },
+    { LCC_LXDN_DEFINE  , "define"  },
+    { LCC_LXDN_UNDEF   , "undef"   },
+    { LCC_LXDN_IF      , "if"      },
+    { LCC_LXDN_IFDEF   , "ifdef"   },
+    { LCC_LXDN_IFNDEF  , "ifndef"  },
+    { LCC_LXDN_ELSE    , "else"    },
+    { LCC_LXDN_ENDIF   , "endif"   },
+    { LCC_LXDN_PRAGMA  , "pragma"  },
+    { 0                , NULL      },
+};
+
 static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
 {
     lcc_string_unref(((lcc_file_t *)item)->name);
@@ -399,19 +480,459 @@ static char _lcc_error_default(
     return type != LCC_LXET_ERROR;
 }
 
+#pragma ide diagnostic push
+#pragma ide diagnostic ignored "missing_default_case"
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch"
+
 static void _lcc_handle_substate(lcc_lexer_t *self)
 {
-    // TODO: handle substate
-    if ((self->flags & LCC_LXF_EOF) ||
-        (self->flags & LCC_LXF_EOL))
+    /* check for EOF and EOL flags */
+    if ((self->flags & LCC_LXF_END))
     {
-        self->state = LCC_LX_STATE_ACCEPT;
+        /* check for sub-state */
+        switch (self->substate)
+        {
+            /* in the middle of nothing, just ignore it */
+            case LCC_LX_SUBSTATE_NULL:
+                break;
+
+            /* in the middle of parsing identifiers, accept or commit it */
+            case LCC_LX_SUBSTATE_NAME:
+            {
+                /* convert to string */
+                char *p = self->token_buffer.buf;
+                size_t n = self->token_buffer.len;
+                lcc_string_t *s = lcc_string_from_buffer(p, n);
+
+                /* attach to token chain */
+                lcc_token_attach(&(self->tokens), lcc_token_from_ident(s));
+                lcc_token_buffer_reset(&(self->token_buffer));
+                break;
+            }
+
+            /* in the middle of parsing numbers, check for number suffix */
+            case LCC_LX_SUBSTATE_NUMBER:
+            {
+                // TODO: check number suffix
+                break;
+            }
+
+            /* in the middle of parsing chars or strings, definately an error */
+            case LCC_LX_SUBSTATE_CHARS:
+            case LCC_LX_SUBSTATE_STRING:
+            {
+                _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s", self->flags & LCC_LXF_EOF ? "EOF" : "EOL"));
+                return;
+            }
+
+            /* in the middle of parsing operators, accept or commit what already got */
+            case LCC_LX_SUBSTATE_OPERATOR_PLUS    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PLUS)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_MINUS   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_MINUS)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STAR)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PERCENT)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ASSIGN)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_GT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GT)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHR)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_LT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LT)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHL)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LNOT)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BAND)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BOR)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BXOR)); break;
+        }
+
+        /* EOF or EOL when parsing compiler directive, commit it */
+        if (self->flags & LCC_LXF_DIRECTIVE)
+            self->state = LCC_LX_STATE_COMMIT;
+        else
+            self->state = LCC_LX_STATE_ACCEPT;
+
+        /* clear those flags */
+        self->flags &= ~LCC_LXF_END;
         return;
     }
 
-    printf("SUBSTATE(%d): %c\n", self->substate, self->ch);
-    self->state = LCC_LX_STATE_SHIFT;
+    /* check for sub-state */
+    switch (self->substate)
+    {
+        /* initial sub-state */
+        case LCC_LX_SUBSTATE_NULL:
+        {
+            /* check for character */
+            switch (self->ch)
+            {
+                /* identifiers */
+                case '_':
+                case 'a' ... 'z':
+                case 'A' ... 'Z':
+                {
+                    self->substate = LCC_LX_SUBSTATE_NAME;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* chars */
+                case '\'':
+                {
+                    self->substate = LCC_LX_SUBSTATE_CHARS;
+                    break;
+                }
+
+                /* numbers */
+                case '.':
+                case '0' ... '9':
+                {
+                    self->substate = LCC_LX_SUBSTATE_NUMBER;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* strings */
+                case '"':
+                {
+                    self->substate = LCC_LX_SUBSTATE_STRING;
+                    break;
+                }
+
+                /* single-character operators */
+                case '~':
+                case '(':
+                case ')':
+                case '[':
+                case ']':
+                case '{':
+                case '}':
+                case ':':
+                case ',':
+                case ';':
+                case '?':
+                {
+                    /* assign operators */
+                    switch (self->ch)
+                    {
+                        case '~': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BINV)); break;
+                        case '(': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LBRACKET)); break;
+                        case ')': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_RBRACKET)); break;
+                        case '[': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LINDEX)); break;
+                        case ']': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_RINDEX)); break;
+                        case '{': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LBLOCK)); break;
+                        case '}': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_RBLOCK)); break;
+                        case ':': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_COLON)); break;
+                        case ',': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_COMMA)); break;
+                        case ';': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SEMICOLON)); break;
+                        case '?': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_QUESTION)); break;
+                    }
+
+                    /* for sure this is the only character */
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    return;
+                }
+
+                /* multi-character operators */
+                case '+': self->substate = LCC_LX_SUBSTATE_OPERATOR_PLUS; break;
+                case '-': self->substate = LCC_LX_SUBSTATE_OPERATOR_MINUS; break;
+                case '*': self->substate = LCC_LX_SUBSTATE_OPERATOR_STAR; break;
+                case '/': self->substate = LCC_LX_SUBSTATE_OPERATOR_SLASH; break;
+                case '%': self->substate = LCC_LX_SUBSTATE_OPERATOR_PERCENT; break;
+                case '=': self->substate = LCC_LX_SUBSTATE_OPERATOR_EQU; break;
+                case '>': self->substate = LCC_LX_SUBSTATE_OPERATOR_GT; break;
+                case '<': self->substate = LCC_LX_SUBSTATE_OPERATOR_LT; break;
+                case '!': self->substate = LCC_LX_SUBSTATE_OPERATOR_EXCL; break;
+                case '&': self->substate = LCC_LX_SUBSTATE_OPERATOR_AMP; break;
+                case '|': self->substate = LCC_LX_SUBSTATE_OPERATOR_BAR; break;
+                case '^': self->substate = LCC_LX_SUBSTATE_OPERATOR_CARET; break;
+
+                /* other characters */
+                default:
+                {
+                    /* whitespaces, skip it */
+                    if (isspace(self->ch))
+                        break;
+
+                    /* GNU ext :: dollar in identifier */
+                    if ((self->ch == '$') && (self->gnuext & LCC_LX_GNUX_DOLLAR_IDENT))
+                    {
+                        self->substate = LCC_LX_SUBSTATE_NAME;
+                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                        break;
+                    }
+
+                    /* other unknown characters */
+                    if (isprint(self->ch))
+                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '%c'", self->ch));
+                    else
+                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '\\x%.2x'", (uint8_t)(self->ch)));
+
+                    return;
+                }
+            }
+
+            /* continue shifting */
+            self->state = LCC_LX_STATE_SHIFT;
+            break;
+        }
+
+        /* identifiers */
+        case LCC_LX_SUBSTATE_NAME:
+        {
+            /* it's a valid identifier */
+            if ((self->ch == '_') ||
+                ((self->ch >= 'a') && (self->ch <= 'z')) ||
+                ((self->ch >= 'A') && (self->ch <= 'Z')) ||
+                ((self->ch >= '0') && (self->ch <= '9')) ||
+                ((self->ch == '$') && (self->gnuext & LCC_LX_GNUX_DOLLAR_IDENT)))
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                break;
+            }
+
+            /* convert to string */
+            char *p = self->token_buffer.buf;
+            size_t n = self->token_buffer.len;
+            lcc_string_t *s = lcc_string_from_buffer(p, n);
+
+            /* attach to token chain */
+            lcc_token_attach(&(self->tokens), lcc_token_from_ident(s));
+            lcc_token_buffer_reset(&(self->token_buffer));
+
+            /* keep this character */
+            self->state = LCC_LX_STATE_ACCEPT_KEEP;
+            break;
+        }
+
+        // TODO: implement chars number string
+        case LCC_LX_SUBSTATE_CHARS:
+        case LCC_LX_SUBSTATE_NUMBER:
+        case LCC_LX_SUBSTATE_STRING:
+        {
+            self->state = LCC_LX_STATE_SHIFT;
+            lcc_token_buffer_reset(&(self->token_buffer));
+            break;
+        }
+
+        /** very complex operator logic **/
+
+        case LCC_LX_SUBSTATE_OPERATOR_STAR:     /* * *= */
+        case LCC_LX_SUBSTATE_OPERATOR_SLASH:    /* / /= */
+        case LCC_LX_SUBSTATE_OPERATOR_PERCENT:  /* % %= */
+        case LCC_LX_SUBSTATE_OPERATOR_EQU:      /* = == */
+        case LCC_LX_SUBSTATE_OPERATOR_EXCL:     /* ! != */
+        case LCC_LX_SUBSTATE_OPERATOR_AMP:      /* & &= */
+        case LCC_LX_SUBSTATE_OPERATOR_BAR:      /* | |= */
+        case LCC_LX_SUBSTATE_OPERATOR_CARET:    /* ^ ^= */
+        {
+            /* got an equal sign */
+            if (self->ch == '=')
+            {
+                switch (self->substate)
+                {
+                    case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IMUL)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IDIV)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IMOD)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_EQ)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_NEQ)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IAND)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IOR)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IXOR)); break;
+                }
+            }
+            else
+            {
+                switch (self->substate)
+                {
+                    case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STAR)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PERCENT)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ASSIGN)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LNOT)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BAND)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BOR)); break;
+                    case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BXOR)); break;
+                }
+            }
+
+            /* accept the token, keep the character as needed */
+            self->state = (self->ch == '=') ? LCC_LX_STATE_ACCEPT : LCC_LX_STATE_ACCEPT_KEEP;
+            break;
+        }
+
+        /* + ++ += */
+        case LCC_LX_SUBSTATE_OPERATOR_PLUS:
+        {
+            switch (self->ch)
+            {
+                /* ++ */
+                case '+':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_INCR));
+                    break;
+                }
+
+                /* += */
+                case '=':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IADD));
+                    break;
+                }
+
+                /* + */
+                default:
+                {
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PLUS));
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* - -- -= */
+        case LCC_LX_SUBSTATE_OPERATOR_MINUS:
+        {
+            switch (self->ch)
+            {
+                /* -- */
+                case '-':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_DECR));
+                    break;
+                }
+
+                /* -= */
+                case '=':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ISUB));
+                    break;
+                }
+
+                /* - */
+                default:
+                {
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_MINUS));
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* > >> >= >>= */
+        case LCC_LX_SUBSTATE_OPERATOR_GT:
+        {
+            switch (self->ch)
+            {
+                /* >> >>= */
+                case '>':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_OPERATOR_GT_GT;
+                    break;
+                }
+
+                /* >= */
+                case '=':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GEQ));
+                    break;
+                }
+
+                /* > */
+                default:
+                {
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GT));
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* < << <= <<= */
+        case LCC_LX_SUBSTATE_OPERATOR_LT:
+        {
+            switch (self->ch)
+            {
+                /* << <<= */
+                case '<':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_OPERATOR_LT_LT;
+                    break;
+                }
+
+                /* <= */
+                case '=':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LEQ));
+                    break;
+                }
+
+                /* < */
+                default:
+                {
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LT));
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* >> >>= */
+        case LCC_LX_SUBSTATE_OPERATOR_GT_GT:
+        {
+            /* >>= */
+            if (self->ch == '=')
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ISHR));
+            }
+
+            /* >> */
+            else
+            {
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHR));
+            }
+
+            break;
+        }
+
+        /* << <<= */
+        case LCC_LX_SUBSTATE_OPERATOR_LT_LT:
+        {
+            if (self->ch == '=')
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ISHL));
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHL));
+            }
+
+            break;
+        }
+    }
 }
+
+#pragma clang diagnostic pop
+#pragma ide diagnostic pop
 
 static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 {
@@ -437,10 +958,15 @@ static inline lcc_string_t *_lcc_get_dir_name(lcc_string_t *name)
 
 void lcc_lexer_free(lcc_lexer_t *self)
 {
-    lcc_token_free(&(self->token));
+    /* release all chained tokens */
+    while (self->tokens.next != &(self->tokens))
+        lcc_token_free(self->tokens.next);
+
+    /* clear other tables */
     lcc_array_free(&(self->files));
     lcc_token_buffer_free(&(self->token_buffer));
     lcc_string_array_free(&(self->include_paths));
+    lcc_string_array_free(&(self->library_paths));
 }
 
 char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
@@ -463,8 +989,8 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     lcc_string_array_init(&(self->library_paths));
     lcc_string_array_append(&(self->library_paths), _lcc_get_dir_name(file.name));
 
-    /* initial token and token buffer */
-    lcc_token_init(&(self->token));
+    /* token list and token buffer */
+    lcc_token_init(&(self->tokens));
     lcc_token_buffer_init(&(self->token_buffer));
 
     /* initial lexer state */
@@ -473,13 +999,17 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     self->state = LCC_LX_STATE_INIT;
     self->substate = LCC_LX_SUBSTATE_NULL;
 
+    /* initial flags and GNU extensions */
+    self->flags = 0;
+    self->gnuext = 0;
+
     /* default error handling */
     self->error_fn = _lcc_error_default;
     self->error_data = NULL;
     return 1;
 }
 
-char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
+char lcc_lexer_next(lcc_lexer_t *self)
 {
     for (;;)
     {
@@ -543,7 +1073,7 @@ char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
                         /* check if it's a generic character */
                         if (!(_lcc_check_line_cont(file, line)))
                         {
-                            self->state = LCC_LX_STATE_ADVANCE;
+                            self->state = LCC_LX_STATE_GOT_CHAR;
                             break;
                         }
 
@@ -557,13 +1087,14 @@ char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
                     /* maybe compiler directive */
                     case '#':
                     {
-                        // TODO: handle compiler directive
+                        self->state = (self->file->flags & LCC_FF_LNODIR) ? LCC_LX_STATE_GOT_CHAR : LCC_LX_STATE_GOT_DIRECTIVE;
+                        break;
                     }
 
                     /* generic character */
                     default:
                     {
-                        self->state = LCC_LX_STATE_ADVANCE;
+                        self->state = LCC_LX_STATE_GOT_CHAR;
                         break;
                     }
                 }
@@ -574,10 +1105,9 @@ char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
             /* pop file from file stack */
             case LCC_LX_STATE_POP_FILE:
             {
-                /* set EOF flags to flush the sub-state */
+                /* set EOF flags to flush the preprocessor */
+                self->state = LCC_LX_STATE_GOT_CHAR;
                 self->flags |= LCC_LXF_EOF;
-                _lcc_handle_substate(self);
-                self->flags &= ~LCC_LXF_EOF;
 
                 /* no files left, it's an EOS (End-Of-Source) */
                 if (self->files.count == 1)
@@ -601,15 +1131,13 @@ char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
             /* move to next line */
             case LCC_LX_STATE_NEXT_LINE:
             {
-                /* set EOL flags to flush the sub-state */
+                /* set EOL flags to flush the preprocessor */
+                self->state = LCC_LX_STATE_GOT_CHAR;
                 self->flags |= LCC_LXF_EOL;
-                _lcc_handle_substate(self);
-                self->flags &= ~LCC_LXF_EOL;
 
-                /* move to next line, and reset compiler directive flags */
+                /* move to next line */
                 self->file->row++;
                 self->file->col = 0;
-                self->file->flags &= ~LCC_FF_LNODIR;
                 break;
             }
 
@@ -622,8 +1150,8 @@ char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
                 break;
             }
 
-            /* we got a new character, advance the substate */
-            case LCC_LX_STATE_ADVANCE:
+            /* we got a new character */
+            case LCC_LX_STATE_GOT_CHAR:
             {
                 /* not a space, prohibit compiler directive on this line */
                 if (!(isspace(self->ch)))
@@ -634,11 +1162,103 @@ char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token)
                 break;
             }
 
+            /* we got a compiler directive */
+            case LCC_LX_STATE_GOT_DIRECTIVE:
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->flags |= LCC_LXF_DIRECTIVE;
+                self->file->flags |= LCC_FF_LNODIR;
+                break;
+            }
+
+            /* commit parsed compiler directive */
+            case LCC_LX_STATE_COMMIT:
+            {
+                printf("** commit directive %.16lx\n", self->flags);
+                for (lcc_token_t *t = self->tokens.next; t != &(self->tokens); t = t->next)
+                {
+                    if (t->type == LCC_TK_IDENT)
+                        printf("ident %p: %s\n", t, t->ident->buf);
+                    else
+                        printf("oper  %p: %d\n", t, t->operator);
+                }
+                printf("** commit directive done\n");
+
+                /* release all chained tokens */
+                while (self->tokens.next != &(self->tokens))
+                    lcc_token_free(self->tokens.next);
+
+                /* clear directive flags */
+                self->flags &= LCC_LXF_MASK;
+                self->flags &= ~LCC_LXF_DIRECTIVE;
+                self->file->flags &= ~LCC_FF_LNODIR;
+
+                /* reset state and sub-state */
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                break;
+            }
+
             /* token accepted */
             case LCC_LX_STATE_ACCEPT:
+            case LCC_LX_STATE_ACCEPT_KEEP:
             {
+                /* shift next character if needed */
+                if (self->state == LCC_LX_STATE_ACCEPT)
+                    self->state = LCC_LX_STATE_SHIFT;
+                else
+                    self->state = LCC_LX_STATE_GOT_CHAR;
+
+                /* still parsing directives, don't accept now */
+                if (self->flags & LCC_LXF_DIRECTIVE)
+                {
+                    /* update directive name */
+                    if (!(self->flags & LCC_LXDN_MASK))
+                    {
+                        /* get the directive name token */
+                        lcc_string_t *name = self->tokens.prev->ident;
+                        const _lcc_directive_bits_t *pb;
+
+                        /* find directive by name */
+                        for (pb = DIRECTIVES; pb->name; pb++)
+                            if (!(strcmp(pb->name, name->buf)))
+                                break;
+
+                        /* no such directive */
+                        if (!(pb->name))
+                        {
+                            _lcc_lexer_error(self, lcc_string_from_format("Unknown compiler directive \"%s\"", name->buf));
+                            break;
+                        }
+
+                        /* set the name bit, and remove the token */
+                        self->flags |= pb->bits;
+                        lcc_token_free(self->tokens.prev);
+                    }
+
+                    self->substate = LCC_LX_SUBSTATE_NULL;
+                    break;
+                }
+
+                printf("** accept token\n");
+                for (lcc_token_t *t = self->tokens.next; t != &(self->tokens); t = t->next)
+                {
+                    if (t->type == LCC_TK_IDENT)
+                        printf("ident %p: %s\n", t, t->ident->buf);
+                    else if (t->type == LCC_TK_OPERATOR)
+                        printf("oper  %p: %d\n", t, t->operator);
+                    else
+                        printf("token %p: %d\n", t, t->type);
+                }
+                printf("** accept token done\n");
+
+                /* release all chained tokens */
+                while (self->tokens.next != &(self->tokens))
+                    lcc_token_free(self->tokens.next);
+
                 // TODO: accept token
-                self->state = LCC_LX_STATE_SHIFT;
+
+                /* reset sub-state */
                 self->substate = LCC_LX_SUBSTATE_NULL;
                 return 1;
             }
@@ -668,6 +1288,14 @@ void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path)
 void lcc_lexer_add_library_path(lcc_lexer_t *self, const char *path)
 {
     // TODO: add library path
+}
+
+void lcc_lexer_set_gnu_ext(lcc_lexer_t *self, lcc_lexer_gnu_ext_t name, char enabled)
+{
+    if (enabled)
+        self->gnuext |= name;
+    else
+        self->gnuext &= ~name;
 }
 
 void lcc_lexer_set_error_handler(lcc_lexer_t *self, lcc_lexer_on_error_fn error_fn, void *data)
