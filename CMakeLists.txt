@@ -2,12 +2,18 @@ cmake_minimum_required(VERSION 3.12)
 project(LightCC C)
 
 set(CMAKE_C_STANDARD 99)
+add_definitions(-D_BSD_SOURCE)
+
 include_directories(include)
 
 set(LIGHTCC
+        include/lcc_array.h
         include/lcc_lexer.h
         include/lcc_string.h
+        include/lcc_string_array.h
+        src/lcc_array.c
         src/lcc_lexer.c
-        src/lcc_string.c)
+        src/lcc_string.c
+        src/lcc_string_array.c src/lcc_map.c include/lcc_map.h)
 
 add_executable(lcc main.c ${LIGHTCC})
