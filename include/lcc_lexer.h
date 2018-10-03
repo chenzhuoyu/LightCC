@@ -160,6 +160,7 @@ typedef struct _lcc_token_t
 void lcc_token_free(lcc_token_t *self);
 void lcc_token_init(lcc_token_t *self);
 
+void lcc_token_set_eof          (lcc_token_t *self);
 void lcc_token_set_ident        (lcc_token_t *self, lcc_string_t       *ident);
 void lcc_token_set_keyword      (lcc_token_t *self, lcc_keyword_t       keyword);
 void lcc_token_set_operator     (lcc_token_t *self, lcc_operator_t      operator);
@@ -184,9 +185,8 @@ void lcc_token_set_string       (lcc_token_t *self, lcc_string_t       *value);
 typedef struct _lcc_file_t
 {
     int flags;
-    ssize_t col;
-    ssize_t row;
-    ssize_t pos;
+    size_t col;
+    size_t row;
     lcc_string_t *name;
     lcc_string_array_t lines;
 } lcc_file_t;
@@ -211,23 +211,45 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch);
 
 /*** Lexer Object ***/
 
+#define LCC_LEXER_MAX_LINE_LEN      4096
+
 typedef enum _lcc_lexer_state_t
 {
     LCC_LX_STATE_INIT,
     LCC_LX_STATE_SHIFT,
+    LCC_LX_STATE_POP_FILE,
+    LCC_LX_STATE_NEXT_LINE,
+    LCC_LX_STATE_NEXT_LINE_CONT,
+    LCC_LX_STATE_ADVANCE,
     LCC_LX_STATE_ACCEPT,
     LCC_LX_STATE_REJECT,
 } lcc_lexer_state_t;
 
+typedef enum _lcc_lexer_substate_t
+{
+    LCC_LX_SUBSTATE_NULL,
+} lcc_lexer_substate_t;
+
+typedef enum _lcc_lexer_error_type_t
+{
+    LCC_LXET_ERROR,
+    LCC_LXET_WARNING,
+} lcc_lexer_error_type_t;
+
 struct _lcc_lexer_t;
 typedef char (*lcc_lexer_on_error_fn)(
-    struct _lcc_lexer_t *self,
-    ssize_t              row,
-    ssize_t              col,
-    lcc_string_t        *message,
-    char                 is_warning,
-    void                *data
+    struct _lcc_lexer_t     *self,
+    lcc_string_t            *file,
+    ssize_t                  row,
+    ssize_t                  col,
+    lcc_string_t            *message,
+    lcc_lexer_error_type_t   type,
+    void                    *data
 );
+
+#define LCC_LXF_EOL         0x00000001      /* End-Of-Line encountered */
+#define LCC_LXF_EOF         0x00000002      /* End-Of-File encountered */
+#define LCC_LXF_EOS         0x00000004      /* End-Of-Source encountered */
 
 typedef struct _lcc_lexer_t
 {
@@ -237,23 +259,25 @@ typedef struct _lcc_lexer_t
     lcc_string_array_t include_paths;
     lcc_string_array_t library_paths;
 
+    /* state machine */
+    int flags;
+    lcc_lexer_state_t state;
+    lcc_lexer_substate_t substate;
+
     /* current file and token */
+    char ch;
     lcc_file_t *file;
     lcc_token_t token;
+    lcc_token_buffer_t token_buffer;
 
     /* error handling */
     void *error_data;
     lcc_lexer_on_error_fn error_fn;
-
-    /* state machine */
-    char ch;
-    lcc_lexer_state_t state;
-    lcc_token_buffer_t token_buffer;
 } lcc_lexer_t;
 
 void lcc_lexer_free(lcc_lexer_t *self);
 char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file);
-char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t *token);
+char lcc_lexer_next(lcc_lexer_t *self, lcc_token_t **token);
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value);
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);

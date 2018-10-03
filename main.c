@@ -6,7 +6,14 @@
 int main()
 {
     lcc_lexer_t lexer;
-    lcc_lexer_init(&lexer, lcc_file_open("/Users/Oxygen/Sources/tests/lcc_test.h"));
+    lcc_lexer_init(&lexer, lcc_file_open("/Users/Oxygen/Sources/tests/lcc_test.c"));
+
+    while (!(lexer.flags & LCC_LXF_EOS))
+    {
+        printf("-------------------\n");
+        lcc_lexer_next(&lexer, NULL);
+    }
+
     lcc_lexer_free(&lexer);
     return 0;
 }

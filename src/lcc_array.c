@@ -70,6 +70,10 @@ char lcc_array_pop(lcc_array_t *self, void *data)
     if (data)
         memcpy(data, PTR_INDEX(self, self->count - 1), self->item_size);
 
+    /* or destroy the item */
+    else if (self->dtor_fn)
+        self->dtor_fn(self, PTR_INDEX(self, self->count - 1), self->dtor_data);
+
     /* resize the memory and counter */
     self->count--;
     self->items = realloc(self->items, self->count * self->item_size);
