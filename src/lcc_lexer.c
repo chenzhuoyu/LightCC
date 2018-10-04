@@ -664,9 +664,6 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing chars or strings, definately an error */
             case LCC_LX_SUBSTATE_STRING:
             case LCC_LX_SUBSTATE_STRING_ESCAPE:
-            case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX:
-            case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2:
-            case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3:
             {
                 _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s", self->flags & LCC_LXF_EOF ? "EOF" : "EOL"));
                 return;
@@ -904,191 +901,9 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* escape characters */
         case LCC_LX_SUBSTATE_STRING_ESCAPE:
         {
-            switch (self->ch)
-            {
-                /* single-character escape characters */
-                case 'a':
-                case 'b':
-                case 'f':
-                case 'n':
-                case 'r':
-                case 't':
-                case 'v':
-                case '?':
-                case '\\':
-                case '\'':
-                case '\"':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-
-                /* hexadecimal escape characters */
-                case 'x':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_HEX;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-
-                /* octal escape characters */
-                case '0' ... '7':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-
-                /* other unknown characters */
-                default:
-                {
-                    if (isprint(self->ch))
-                        _lcc_lexer_error(self, lcc_string_from_format("Invalid escape character '%c'", self->ch));
-                    else
-                        _lcc_lexer_error(self, lcc_string_from_format("Invalid escape character '\\x%02x'", (uint8_t)(self->ch)));
-
-                    break;
-                }
-            }
-
-            break;
-        }
-
-        /* hexadecimal escape characters */
-        case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX:
-        {
-            switch (self->ch)
-            {
-                /* end of string */
-                case '"':
-                {
-                    /* ignore when parsing chars */
-                    if (self->flags & LCC_LXF_CHAR_SEQ)
-                        goto _lcc_label_string_escape_generic_char;
-
-                    /* accept as strings */
-                    _lcc_commit_string(self);
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    break;
-                }
-
-                /* end of chars */
-                case '\'':
-                {
-                    /* ignore when parsing strings */
-                    if (!(self->flags & LCC_LXF_CHAR_SEQ))
-                        goto _lcc_label_string_escape_generic_char;
-
-                    /* accept as chars */
-                    _lcc_commit_chars(self);
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    break;
-                }
-
-                /* hexadecimal digits */
-                case '0' ... '9':
-                case 'a' ... 'f':
-                case 'A' ... 'F':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_HEX;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-
-                /* other characters */
-                default:
-                _lcc_label_string_escape_generic_char:
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-            }
-
-            break;
-        }
-
-        /* octal escape characters (second digit) */
-        case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2:
-        {
-            switch (self->ch)
-            {
-                /* end of string */
-                case '"':
-                {
-                    /* ignore when parsing chars */
-                    if (self->flags & LCC_LXF_CHAR_SEQ)
-                        goto _lcc_label_string_escape_oct_2_generic_char;
-
-                    /* accept as strings */
-                    _lcc_commit_string(self);
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    break;
-                }
-
-                /* end of chars */
-                case '\'':
-                {
-                    /* ignore when parsing strings */
-                    if (!(self->flags & LCC_LXF_CHAR_SEQ))
-                        goto _lcc_label_string_escape_oct_2_generic_char;
-
-                    /* accept as chars */
-                    _lcc_commit_chars(self);
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    break;
-                }
-
-                /* second octal digit */
-                case '0' ... '7':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-
-                /* other characters */
-                default:
-                _lcc_label_string_escape_oct_2_generic_char:
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_STRING;
-                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    break;
-                }
-            }
-
-            break;
-        }
-
-        /* octal escape characters (third digit) */
-        case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3:
-        {
-            if ((self->ch == '\'') && (self->flags & LCC_LXF_CHAR_SEQ))
-            {
-                _lcc_commit_string(self);
-                self->state = LCC_LX_STATE_ACCEPT;
-            }
-            else if ((self->ch == '"') && !(self->flags & LCC_LXF_CHAR_SEQ))
-            {
-                _lcc_commit_string(self);
-                self->state = LCC_LX_STATE_ACCEPT;
-            }
-            else
-            {
-                self->state = LCC_LX_STATE_SHIFT;
-                self->substate = LCC_LX_SUBSTATE_STRING;
-                lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                break;
-            }
-
+            self->state = LCC_LX_STATE_SHIFT;
+            self->substate = LCC_LX_SUBSTATE_STRING;
+            lcc_token_buffer_append(&(self->token_buffer), self->ch);
             break;
         }
 
@@ -1306,7 +1121,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     return 1;
 }
 
-char lcc_lexer_next(lcc_lexer_t *self)
+char lcc_lexer_advance(lcc_lexer_t *self)
 {
     for (;;)
     {
@@ -1402,9 +1217,17 @@ char lcc_lexer_next(lcc_lexer_t *self)
             /* pop file from file stack */
             case LCC_LX_STATE_POP_FILE:
             {
+                /* check for EOS (End-Of-Source) */
+                if (self->flags & LCC_LXF_EOS)
+                {
+                    self->state = LCC_LX_STATE_END;
+                    self->substate = LCC_LX_SUBSTATE_NULL;
+                    break;
+                }
+
                 /* set EOF flags to flush the preprocessor */
-                self->state = LCC_LX_STATE_GOT_CHAR;
                 self->flags |= LCC_LXF_EOF;
+                _lcc_handle_substate(self);
 
                 /* no files left, it's an EOS (End-Of-Source) */
                 if (self->files.count == 1)
@@ -1429,8 +1252,8 @@ char lcc_lexer_next(lcc_lexer_t *self)
             case LCC_LX_STATE_NEXT_LINE:
             {
                 /* set EOL flags to flush the preprocessor */
-                self->state = LCC_LX_STATE_GOT_CHAR;
                 self->flags |= LCC_LXF_EOL;
+                _lcc_handle_substate(self);
 
                 /* move to next line */
                 self->file->row++;
@@ -1471,6 +1294,7 @@ char lcc_lexer_next(lcc_lexer_t *self)
             /* commit parsed compiler directive */
             case LCC_LX_STATE_COMMIT:
             {
+                // TODO: commit directive
                 printf("** commit directive %.16lx\n", self->flags);
                 for (lcc_token_t *t = self->tokens.next; t != &(self->tokens); t = t->next)
                 {
@@ -1479,8 +1303,6 @@ char lcc_lexer_next(lcc_lexer_t *self)
                     lcc_string_unref(ts);
                 }
                 printf("** commit directive done\n");
-
-                /* release all chained tokens */
                 while (self->tokens.next != &(self->tokens))
                     lcc_token_free(self->tokens.next);
 
@@ -1510,6 +1332,15 @@ char lcc_lexer_next(lcc_lexer_t *self)
                     break;
                 }
 
+                /* nothing to accept, equivalent to SHIFT */
+                if (self->tokens.next == &(self->tokens))
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NULL;
+                    break;
+                }
+
+                // TODO: accept token
                 printf("** accept token\n");
                 for (lcc_token_t *t = self->tokens.next; t != &(self->tokens); t = t->next)
                 {
@@ -1518,12 +1349,9 @@ char lcc_lexer_next(lcc_lexer_t *self)
                     lcc_string_unref(ts);
                 }
                 printf("** accept token done\n");
-
-                /* release all chained tokens */
                 while (self->tokens.next != &(self->tokens))
                     lcc_token_free(self->tokens.next);
 
-                // TODO: accept token
                 return 1;
             }
 
@@ -1534,6 +1362,13 @@ char lcc_lexer_next(lcc_lexer_t *self)
                 self->state = LCC_LX_STATE_SHIFT;
                 self->substate = LCC_LX_SUBSTATE_NULL;
                 return 0;
+            }
+
+            /* end of lexing, emit an EOF token */
+            case LCC_LX_STATE_END:
+            {
+                lcc_token_attach(&(self->tokens), lcc_token_from_eof());
+                return 1;
             }
         }
     }

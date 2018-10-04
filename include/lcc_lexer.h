@@ -233,6 +233,7 @@ typedef enum _lcc_lexer_state_t
     LCC_LX_STATE_ACCEPT,
     LCC_LX_STATE_ACCEPT_KEEP,
     LCC_LX_STATE_REJECT,
+    LCC_LX_STATE_END,
 } lcc_lexer_state_t;
 
 typedef enum _lcc_lexer_substate_t
@@ -241,9 +242,6 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_NAME,
     LCC_LX_SUBSTATE_STRING,
     LCC_LX_SUBSTATE_STRING_ESCAPE,
-    LCC_LX_SUBSTATE_STRING_ESCAPE_HEX,
-    LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2,
-    LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3,
     LCC_LX_SUBSTATE_NUMBER,
     LCC_LX_SUBSTATE_OPERATOR_PLUS,
     LCC_LX_SUBSTATE_OPERATOR_MINUS,
@@ -331,7 +329,7 @@ typedef enum _lcc_lexer_gnu_ext_t
 
 void lcc_lexer_free(lcc_lexer_t *self);
 char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file);
-char lcc_lexer_next(lcc_lexer_t *self);
+char lcc_lexer_advance(lcc_lexer_t *self);
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value);
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);
