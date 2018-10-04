@@ -180,6 +180,10 @@ lcc_token_t *lcc_token_from_longdouble   (long double         value);
 lcc_token_t *lcc_token_from_char         (lcc_string_t       *value);
 lcc_token_t *lcc_token_from_string       (lcc_string_t       *value);
 
+const char *lcc_token_kw_name(lcc_keyword_t value);
+const char *lcc_token_op_name(lcc_operator_t value);
+lcc_string_t *lcc_token_to_string(lcc_token_t *self);
+
 /*** Source File ***/
 
 #define LCC_FF_LNODIR           0x00000001      /* no compiler directive is allowed on this line */
@@ -235,10 +239,11 @@ typedef enum _lcc_lexer_substate_t
 {
     LCC_LX_SUBSTATE_NULL,
     LCC_LX_SUBSTATE_NAME,
-    LCC_LX_SUBSTATE_CHARS,
-    LCC_LX_SUBSTATE_CHARS_ESCAPE,
     LCC_LX_SUBSTATE_STRING,
     LCC_LX_SUBSTATE_STRING_ESCAPE,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_HEX,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3,
     LCC_LX_SUBSTATE_NUMBER,
     LCC_LX_SUBSTATE_OPERATOR_PLUS,
     LCC_LX_SUBSTATE_OPERATOR_MINUS,
@@ -279,6 +284,7 @@ typedef char (*lcc_lexer_on_error_fn)(
 
 #define LCC_LXF_EOS         0x0000000000000004      /* End-Of-Source encountered */
 #define LCC_LXF_DIRECTIVE   0x0000000000000008      /* parsing compiler directive */
+#define LCC_LXF_CHAR_SEQ    0x0000000000000010      /* parsing character sequence rather than string */
 #define LCC_LXF_MASK        0x00000000ffffffff      /* lexer flags mask */
 
 #define LCC_LXDN_INCLUDE    0x0000000100000000      /* #include directive */
@@ -319,7 +325,8 @@ typedef struct _lcc_lexer_t
 
 typedef enum _lcc_lexer_gnu_ext_t
 {
-    LCC_LX_GNUX_DOLLAR_IDENT = 0x00000001,      /* allow the dollar sign character '$' in identifiers */
+    LCC_LX_GNUX_DOLLAR_IDENT    = 0x00000001,       /* dollar sign character '$' in identifiers */
+    LCC_LX_GNUX_ESCAPE_CHAR     = 0x00000002,       /* '\e' escape character */
 } lcc_lexer_gnu_ext_t;
 
 void lcc_lexer_free(lcc_lexer_t *self);
