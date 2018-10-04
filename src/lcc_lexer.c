@@ -50,6 +50,12 @@ void lcc_token_free(lcc_token_t *self)
                         lcc_string_unref(self->literal.v_string);
                         break;
                     }
+
+                    case LCC_LT_NUMBER:
+                    {
+                        lcc_string_unref(self->literal.v_number);
+                        break;
+                    }
                 }
 
                 break;
@@ -241,6 +247,17 @@ lcc_token_t *lcc_token_from_string(lcc_string_t *value)
     return self;
 }
 
+lcc_token_t *lcc_token_from_number(lcc_string_t *value)
+{
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->prev = self;
+    self->next = self;
+    self->type = LCC_TK_LITERAL;
+    self->literal.type = LCC_LT_NUMBER;
+    self->literal.v_number = value;
+    return self;
+}
+
 const char *lcc_token_kw_name(lcc_keyword_t value)
 {
     switch (value)
@@ -336,6 +353,8 @@ const char *lcc_token_op_name(lcc_operator_t value)
         case LCC_OP_POINT     : return ".";
         case LCC_OP_SEMICOLON : return ";";
         case LCC_OP_DEREF     : return "->";
+        case LCC_OP_STR       : return "#";
+        case LCC_OP_CONCAT    : return "##";
     }
 
     abort();
@@ -364,6 +383,7 @@ lcc_string_t *lcc_token_to_string(lcc_token_t *self)
                 case LCC_LT_LONGDOUBLE : return lcc_string_from_format("{LONGDOUBLE:%LfL}"  , self->literal.v_longdouble);
                 case LCC_LT_CHAR       : return lcc_string_from_format("{CHARS:'%s'}"       , self->literal.v_char->buf);
                 case LCC_LT_STRING     : return lcc_string_from_format("{STRING:\"%s\"}"    , self->literal.v_string->buf);
+                case LCC_LT_NUMBER     : return lcc_string_from_format("{NUMBER:\"%s\"}"    , self->literal.v_number->buf);
             }
         }
     }
@@ -635,6 +655,12 @@ static inline void _lcc_commit_string(lcc_lexer_t *self)
     lcc_token_buffer_reset(&(self->token_buffer));
 }
 
+static inline void _lcc_commit_number(lcc_lexer_t *self)
+{
+    lcc_token_attach(&(self->tokens), lcc_token_from_number(_lcc_dump_token(self)));
+    lcc_token_buffer_reset(&(self->token_buffer));
+}
+
 static void _lcc_handle_substate(lcc_lexer_t *self)
 {
     /* check for EOF and EOL flags */
@@ -643,9 +669,27 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* check for sub-state */
         switch (self->substate)
         {
-            /* in the middle of nothing, just ignore it */
+            /* in the middle of nothing (or comment), just ignore it */
             case LCC_LX_SUBSTATE_NULL:
+            case LCC_LX_SUBSTATE_COMMENT_LINE:
                 break;
+
+            /* block comment */
+            case LCC_LX_SUBSTATE_COMMENT_BLOCK:
+            case LCC_LX_SUBSTATE_COMMENT_BLOCK_END:
+            {
+                /* fire a warning when meets EOF */
+                if (self->flags & LCC_LXF_EOF)
+                {
+                    _lcc_lexer_warning(self, lcc_string_from("EOF when parsing block comment"));
+                    break;
+                }
+
+                /* otherwise shift pass the line ending */
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_COMMENT_BLOCK;
+                return;
+            }
 
             /* in the middle of parsing identifiers, accept or commit it */
             case LCC_LX_SUBSTATE_NAME:
@@ -654,36 +698,72 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 break;
             }
 
-            /* in the middle of parsing numbers, check for number suffix */
-            case LCC_LX_SUBSTATE_NUMBER:
-            {
-                // TODO: check number suffix
-                break;
-            }
-
-            /* in the middle of parsing chars or strings, definately an error */
+            /* in the middle of parsing chars or strings */
             case LCC_LX_SUBSTATE_STRING:
             case LCC_LX_SUBSTATE_STRING_ESCAPE:
             {
-                _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s", self->flags & LCC_LXF_EOF ? "EOF" : "EOL"));
-                return;
+                /* not a directive, it's an error */
+                if (!(self->flags & LCC_LXF_DIRECTIVE))
+                {
+                    _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s when parsing strings", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL"));
+                    return;
+                }
+
+                /* commit as string, but give a warning */
+                _lcc_commit_string(self);
+                _lcc_lexer_warning(self, lcc_string_from("Invalid preprocessor token"));
+                break;
+            }
+
+            /* in the middle of parsing chars or strings */
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
+            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
+            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN:
+            {
+                /* not a directive, it's an error */
+                if (!(self->flags & LCC_LXF_DIRECTIVE))
+                {
+                    _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s when parsing numbers", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL"));
+                    return;
+                }
+
+                /* commit as number, but give a warning */
+                _lcc_commit_number(self);
+                _lcc_lexer_warning(self, lcc_string_from("Invalid preprocessor token"));
+                break;
+            }
+
+            /* in the middle of parsing numbers, commit number */
+            case LCC_LX_SUBSTATE_NUMBER:
+            case LCC_LX_SUBSTATE_NUMBER_ZERO:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_U:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_L:
+            case LCC_LX_SUBSTATE_NUMBER_DECIMAL:
+            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP:
+            {
+                _lcc_commit_number(self);
+                break;
             }
 
             /* in the middle of parsing operators, accept or commit what already got */
-            case LCC_LX_SUBSTATE_OPERATOR_PLUS    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PLUS)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_MINUS   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_MINUS)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STAR)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH)); break;
+            case LCC_LX_SUBSTATE_NUMBER_OR_OP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_POINT  )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_PLUS    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PLUS   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_MINUS   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_MINUS  )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STAR   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH  )); break;
             case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PERCENT)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ASSIGN)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_GT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GT)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHR)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_LT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LT)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHL)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LNOT)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BAND)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BOR)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BXOR)); break;
+            case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ASSIGN )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_GT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GT     )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHR   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_LT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LT     )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHL   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LNOT   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BAND   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BOR    )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BXOR   )); break;
+            case LCC_LX_SUBSTATE_OPERATOR_HASH    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STR    )); break;
         }
 
         /* EOF or EOL when parsing compiler directive, commit it */
@@ -724,20 +804,34 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     break;
                 }
 
+                /* strings */
+                case '"':
+                {
+                    self->flags &= ~LCC_LXF_CHAR_SEQ;
+                    self->substate = LCC_LX_SUBSTATE_STRING;
+                    break;
+                }
+
+                /* zero, maybe decimal, hexadecimal or octal integer */
+                case '0':
+                {
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_ZERO;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
                 /* numbers */
-                case '.':
-                case '0' ... '9':
+                case '1' ... '9':
                 {
                     self->substate = LCC_LX_SUBSTATE_NUMBER;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
                     break;
                 }
 
-                /* strings */
-                case '"':
+                /* maybe a decimal number, or a simple point */
+                case '.':
                 {
-                    self->flags &= ~LCC_LXF_CHAR_SEQ;
-                    self->substate = LCC_LX_SUBSTATE_STRING;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_OR_OP;
                     break;
                 }
 
@@ -793,6 +887,26 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 case '&': self->substate = LCC_LX_SUBSTATE_OPERATOR_AMP; break;
                 case '|': self->substate = LCC_LX_SUBSTATE_OPERATOR_BAR; break;
                 case '^': self->substate = LCC_LX_SUBSTATE_OPERATOR_CARET; break;
+
+                /* token stringize */
+                case '#':
+                {
+                    /* this operator is only allowed in preprocessor */
+                    if (self->flags & LCC_LXF_DIRECTIVE)
+                    {
+                        self->state = LCC_LX_STATE_SHIFT;
+                        self->substate = LCC_LX_SUBSTATE_OPERATOR_HASH;
+                        break;
+                    }
+
+                    /* other unknown characters */
+                    if (isprint(self->ch))
+                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '%c'", self->ch));
+                    else
+                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '\\x%02x'", (uint8_t)(self->ch)));
+
+                    return;
+                }
 
                 /* other characters */
                 default:
@@ -907,11 +1021,342 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             break;
         }
 
-        // TODO: implement number
+        /* numbers */
         case LCC_LX_SUBSTATE_NUMBER:
+        case LCC_LX_SUBSTATE_NUMBER_DECIMAL:
         {
+            switch (self->ch)
+            {
+                /* decimal point */
+                case '.':
+                {
+                    /* already decimal number, stop here */
+                    if (self->substate == LCC_LX_SUBSTATE_NUMBER_DECIMAL)
+                        goto _lcc_label_number_end;
+
+                    /* otherwise mark as decimal number */
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* decimal number (scientific notation) */
+                case 'e':
+                case 'E':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* digits */
+                case '0' ... '9':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* float specifier */
+                case 'f':
+                case 'F':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    _lcc_commit_number(self);
+                    break;
+                }
+
+                /* unsigned specifier */
+                case 'u':
+                case 'U':
+                {
+                    /* doesn't make sense with floating points */
+                    if (self->substate == LCC_LX_SUBSTATE_NUMBER_DECIMAL)
+                        goto _lcc_label_number_end;
+
+                    /* mark as unsigned integer */
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_U;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* long specifier */
+                case 'l':
+                case 'L':
+                {
+                    /* long double, that's it, stop here */
+                    if (self->substate == LCC_LX_SUBSTATE_NUMBER_DECIMAL)
+                    {
+                        self->state = LCC_LX_STATE_ACCEPT;
+                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                        _lcc_commit_number(self);
+                    }
+                    else
+                    {
+                        self->state = LCC_LX_STATE_SHIFT;
+                        self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    }
+
+                    break;
+                }
+
+                /* other characters, commit the number */
+                default:
+                _lcc_label_number_end:
+                {
+                    _lcc_commit_number(self);
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* zero, maybe decimal, hexadecimal or octal integer */
+        case LCC_LX_SUBSTATE_NUMBER_ZERO:
+        {
+            switch (self->ch)
+            {
+                /* decimal point */
+                case '.':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* decimal number (scientific notation) */
+                case 'e':
+                case 'E':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* hexadecimal specifier */
+                case 'x':
+                case 'X':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* octal digits */
+                case '0' ... '7':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* '8' and '9' are not valid octal digits */
+                case '8':
+                case '9':
+                {
+                    _lcc_lexer_error(self, lcc_string_from_format("Invalid octal digit '%c'", self->ch));
+                    break;
+                }
+
+                /* float specifier */
+                case 'f':
+                case 'F':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    _lcc_commit_number(self);
+                    break;
+                }
+
+                /* unsigned specifier */
+                case 'u':
+                case 'U':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_U;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* long specifier */
+                case 'l':
+                case 'L':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* other characters, commit a single zero */
+                default:
+                {
+                    _lcc_commit_number(self);
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* decimal number or a simple point */
+        case LCC_LX_SUBSTATE_NUMBER_OR_OP:
+        {
+            /* not a valid digit, accept as a "." operator */
+            if (!(isdigit(self->ch)))
+            {
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_POINT));
+                break;
+            }
+
+            /* also add the missing point */
             self->state = LCC_LX_STATE_SHIFT;
-            lcc_token_buffer_reset(&(self->token_buffer));
+            self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL;
+            lcc_token_buffer_append(&(self->token_buffer), '.');
+            lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            break;
+        }
+
+        /* hexadecimal integers */
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D:
+        {
+            if (((self->ch >= '0') && (self->ch <= '9')) ||
+                ((self->ch >= 'a') && (self->ch <= 'f')) ||
+                ((self->ch >= 'A') && (self->ch <= 'F')))
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            }
+            else if (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D)
+            {
+                _lcc_commit_number(self);
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+            }
+            else
+            {
+                if (isprint(self->ch))
+                    _lcc_lexer_error(self, lcc_string_from_format("Invalid hexadecimal digit '%c'", self->ch));
+                else
+                    _lcc_lexer_error(self, lcc_string_from_format("Invalid hexadecimal digit '\\x%02x'", (uint8_t)self->ch));
+            }
+
+            break;
+        }
+
+        /* octal integers */
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT:
+        {
+            switch (self->ch)
+            {
+                /* unsigned specifier */
+                case 'u':
+                case 'U':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_U;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* long specifier */
+                case 'l':
+                case 'L':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* octal digits */
+                case '0' ... '7':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* other characters */
+                default:
+                {
+                    _lcc_commit_number(self);
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* unsigned specifier */
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_U:
+        {
+            if ((self->ch != 'l') && (self->ch != 'L'))
+            {
+                _lcc_commit_number(self);
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            }
+
+            break;
+        }
+
+        /* long specifier */
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_L:
+        {
+            if ((self->ch != 'l') && (self->ch != 'L'))
+            {
+                _lcc_commit_number(self);
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                _lcc_commit_number(self);
+            }
+
+            break;
+        }
+
+        // TODO: implement decimal
+
+        /* scientific notation of decimal numbers */
+        case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
+        {
+            break;
+        }
+
+        /* scientific notation of decimal numbers - exponent part */
+        case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP:
+        {
+            break;
+        }
+
+        /* scientific notation of decimal numbers - sign of exponent part */
+        case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN:
+        {
             break;
         }
 
@@ -993,7 +1438,6 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
         /* one- or two-character operators */
         case LCC_LX_SUBSTATE_OPERATOR_STAR    : ACCEPT1_OR_KEEP('=', LCC_OP_IMUL, LCC_OP_STAR   )   /* * *= */
-        case LCC_LX_SUBSTATE_OPERATOR_SLASH   : ACCEPT1_OR_KEEP('=', LCC_OP_IDIV, LCC_OP_SLASH  )   /* / /= */
         case LCC_LX_SUBSTATE_OPERATOR_PERCENT : ACCEPT1_OR_KEEP('=', LCC_OP_IMOD, LCC_OP_PERCENT)   /* % %= */
         case LCC_LX_SUBSTATE_OPERATOR_EQU     : ACCEPT1_OR_KEEP('=', LCC_OP_EQ  , LCC_OP_ASSIGN )   /* = == */
         case LCC_LX_SUBSTATE_OPERATOR_EXCL    : ACCEPT1_OR_KEEP('=', LCC_OP_NEQ , LCC_OP_LNOT   )   /* ! != */
@@ -1013,14 +1457,101 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHR, LCC_OP_BSHR)  /* >> >>= */
         case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHL, LCC_OP_BSHL)  /* << <<= */
 
+        /* macro operators */
+        case LCC_LX_SUBSTATE_OPERATOR_HASH:
+        {
+            if (self->ch == '#')
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_CONCAT));
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STR));
+            }
+
+            break;
+        }
+
         #undef ACCEPT1_OR_KEEP
         #undef ACCEPT2_OR_KEEP
         #undef SHIFT_ACCEPT_OR_KEEP
+
+        /* block comment, line comment or "/", "/=" */
+        case LCC_LX_SUBSTATE_OPERATOR_SLASH:
+        {
+            switch (self->ch)
+            {
+                /* /= */
+                case '=':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IDIV));
+                    break;
+                }
+
+                /* line comment */
+                case '/':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_COMMENT_LINE;
+                    break;
+                }
+
+                /* block comment */
+                case '*':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_COMMENT_BLOCK;
+                    break;
+                }
+
+                /* / */
+                default:
+                {
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH));
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* line comment, ignore every character on this line from now on */
+        case LCC_LX_SUBSTATE_COMMENT_LINE:
+        {
+            self->state = LCC_LX_STATE_SHIFT;
+            self->substate = LCC_LX_SUBSTATE_COMMENT_LINE;
+            break;
+        }
+
+        /* block comment */
+        case LCC_LX_SUBSTATE_COMMENT_BLOCK:
+        {
+            self->state = LCC_LX_STATE_SHIFT;
+            self->substate = (self->ch == '*') ? LCC_LX_SUBSTATE_COMMENT_BLOCK_END : LCC_LX_SUBSTATE_COMMENT_BLOCK;
+            break;
+        }
+
+        /* block comment end */
+        case LCC_LX_SUBSTATE_COMMENT_BLOCK_END:
+        {
+            self->state = LCC_LX_STATE_SHIFT;
+            self->substate = (self->ch == '/') ? LCC_LX_SUBSTATE_NULL : LCC_LX_SUBSTATE_COMMENT_BLOCK;
+            break;
+        }
     }
 }
 
 static void _lcc_handle_directive(lcc_lexer_t *self)
 {
+    /* Special Case :: "#define" macro
+     * set a special flag after macro name parsed successfully */
+    if (self->flags & LCC_LXDN_DEFINE)
+        self->flags |= LCC_LXDF_DEFINE_NS;
+
     /* update directive name */
     if (!(self->flags & LCC_LXDN_MASK))
     {
@@ -1276,6 +1807,18 @@ char lcc_lexer_advance(lcc_lexer_t *self)
                 /* not a space, prohibit compiler directive on this line */
                 if (!(isspace(self->ch)))
                     self->file->flags |= LCC_FF_LNODIR;
+
+                /* Special Case :: "#define" compiler directive
+                 * distingush object-style and function-style macros */
+                if ((self->flags & LCC_LXF_DIRECTIVE) &&
+                    (self->flags & LCC_LXDN_DEFINE) &&
+                    (self->flags & LCC_LXDF_DEFINE_MASK) == LCC_LXDF_DEFINE_NS)
+                {
+                    if (self->ch == '(')
+                        self->flags |= LCC_LXDF_DEFINE_F;
+                    else
+                        self->flags |= LCC_LXDF_DEFINE_O;
+                }
 
                 /* handle all sub-states */
                 _lcc_handle_substate(self);

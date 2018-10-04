@@ -98,21 +98,24 @@ typedef enum _lcc_operator_t
     LCC_OP_POINT,           /* Point            .   */
     LCC_OP_SEMICOLON,       /* Semicolon        ;   */
     LCC_OP_DEREF,           /* Dereferencing    ->  */
+    LCC_OP_STR,             /* Stringize (PP)   #   */
+    LCC_OP_CONCAT,          /* Concat (PP)      ##  */
 } lcc_operator_t;
 
 typedef enum _lcc_literal_type_t
 {
-    LCC_LT_INT,
-    LCC_LT_LONG,
-    LCC_LT_LONGLONG,
-    LCC_LT_UINT,
-    LCC_LT_ULONG,
-    LCC_LT_ULONGLONG,
-    LCC_LT_FLOAT,
-    LCC_LT_DOUBLE,
-    LCC_LT_LONGDOUBLE,
-    LCC_LT_CHAR,
-    LCC_LT_STRING,
+    LCC_LT_INT,             /* int                  */
+    LCC_LT_LONG,            /* long                 */
+    LCC_LT_LONGLONG,        /* long long            */
+    LCC_LT_UINT,            /* unsigned int         */
+    LCC_LT_ULONG,           /* unsigned long        */
+    LCC_LT_ULONGLONG,       /* unsigned long long   */
+    LCC_LT_FLOAT,           /* float                */
+    LCC_LT_DOUBLE,          /* double               */
+    LCC_LT_LONGDOUBLE,      /* long double          */
+    LCC_LT_CHAR,            /* '...'                */
+    LCC_LT_STRING,          /* "..."                */
+    LCC_LT_NUMBER,          /* preprocessor numbers */
 } lcc_literal_type_t;
 
 typedef enum _lcc_token_type_t
@@ -141,6 +144,7 @@ typedef struct _lcc_literal_t
         long double         v_longdouble;
         lcc_string_t       *v_char;
         lcc_string_t       *v_string;
+        lcc_string_t       *v_number;
     };
 } lcc_literal_t;
 
@@ -179,6 +183,7 @@ lcc_token_t *lcc_token_from_double       (double              value);
 lcc_token_t *lcc_token_from_longdouble   (long double         value);
 lcc_token_t *lcc_token_from_char         (lcc_string_t       *value);
 lcc_token_t *lcc_token_from_string       (lcc_string_t       *value);
+lcc_token_t *lcc_token_from_number       (lcc_string_t       *value);
 
 const char *lcc_token_kw_name(lcc_keyword_t value);
 const char *lcc_token_op_name(lcc_operator_t value);
@@ -243,6 +248,17 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_STRING,
     LCC_LX_SUBSTATE_STRING_ESCAPE,
     LCC_LX_SUBSTATE_NUMBER,
+    LCC_LX_SUBSTATE_NUMBER_ZERO,
+    LCC_LX_SUBSTATE_NUMBER_OR_OP,
+    LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX,
+    LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D,
+    LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT,
+    LCC_LX_SUBSTATE_NUMBER_INTEGER_U,
+    LCC_LX_SUBSTATE_NUMBER_INTEGER_L,
+    LCC_LX_SUBSTATE_NUMBER_DECIMAL,
+    LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI,
+    LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP,
+    LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN,
     LCC_LX_SUBSTATE_OPERATOR_PLUS,
     LCC_LX_SUBSTATE_OPERATOR_MINUS,
     LCC_LX_SUBSTATE_OPERATOR_STAR,
@@ -257,6 +273,10 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_OPERATOR_AMP,
     LCC_LX_SUBSTATE_OPERATOR_BAR,
     LCC_LX_SUBSTATE_OPERATOR_CARET,
+    LCC_LX_SUBSTATE_OPERATOR_HASH,
+    LCC_LX_SUBSTATE_COMMENT_LINE,
+    LCC_LX_SUBSTATE_COMMENT_BLOCK,
+    LCC_LX_SUBSTATE_COMMENT_BLOCK_END,
 } lcc_lexer_substate_t;
 
 typedef enum _lcc_lexer_error_type_t
@@ -276,25 +296,30 @@ typedef char (*lcc_lexer_on_error_fn)(
     void                    *data
 );
 
-#define LCC_LXF_EOL         0x0000000000000001      /* End-Of-Line encountered */
-#define LCC_LXF_EOF         0x0000000000000002      /* End-Of-File encountered */
-#define LCC_LXF_END         0x0000000000000003      /* EOF or EOL encountered */
+#define LCC_LXF_EOL             0x0000000000000001      /* End-Of-Line encountered */
+#define LCC_LXF_EOF             0x0000000000000002      /* End-Of-File encountered */
+#define LCC_LXF_END             0x0000000000000003      /* EOF or EOL encountered */
 
-#define LCC_LXF_EOS         0x0000000000000004      /* End-Of-Source encountered */
-#define LCC_LXF_DIRECTIVE   0x0000000000000008      /* parsing compiler directive */
-#define LCC_LXF_CHAR_SEQ    0x0000000000000010      /* parsing character sequence rather than string */
-#define LCC_LXF_MASK        0x00000000ffffffff      /* lexer flags mask */
+#define LCC_LXF_EOS             0x0000000000000004      /* End-Of-Source encountered */
+#define LCC_LXF_DIRECTIVE       0x0000000000000008      /* parsing compiler directive */
+#define LCC_LXF_CHAR_SEQ        0x0000000000000010      /* parsing character sequence rather than string */
+#define LCC_LXF_MASK            0x000000000000ffff      /* lexer flags mask */
 
-#define LCC_LXDN_INCLUDE    0x0000000100000000      /* #include directive */
-#define LCC_LXDN_DEFINE     0x0000000200000000      /* #define directive */
-#define LCC_LXDN_UNDEF      0x0000000800000000      /* #undef directive */
-#define LCC_LXDN_IF         0x0000001000000000      /* #if directive */
-#define LCC_LXDN_IFDEF      0x0000002000000000      /* #ifdef directive */
-#define LCC_LXDN_IFNDEF     0x0000004000000000      /* #ifndef directive */
-#define LCC_LXDN_ELSE       0x0000008000000000      /* #else directive */
-#define LCC_LXDN_ENDIF      0x0000010000000000      /* #endif directive */
-#define LCC_LXDN_PRAGMA     0x0000020000000000      /* #pragma directive */
-#define LCC_LXDN_MASK       0x00000fff00000000      /* compiler directive name mask */
+#define LCC_LXDN_INCLUDE        0x0000000000010000      /* #include directive */
+#define LCC_LXDN_DEFINE         0x0000000000020000      /* #define directive */
+#define LCC_LXDN_UNDEF          0x0000000000040000      /* #undef directive */
+#define LCC_LXDN_IF             0x0000000000080000      /* #if directive */
+#define LCC_LXDN_IFDEF          0x0000000000100000      /* #ifdef directive */
+#define LCC_LXDN_IFNDEF         0x0000000000200000      /* #ifndef directive */
+#define LCC_LXDN_ELSE           0x0000000000400000      /* #else directive */
+#define LCC_LXDN_ENDIF          0x0000000000800000      /* #endif directive */
+#define LCC_LXDN_PRAGMA         0x0000000001000000      /* #pragma directive */
+#define LCC_LXDN_MASK           0x00000000ffff0000      /* compiler directive name mask */
+
+#define LCC_LXDF_DEFINE_O       0x0000000100000000      /* object-style macro */
+#define LCC_LXDF_DEFINE_F       0x0000000200000000      /* function-style macro */
+#define LCC_LXDF_DEFINE_NS      0x0000000400000000      /* macro name already set */
+#define LCC_LXDF_DEFINE_MASK    0x0000000f00000000      /* #define directive flags mask */
 
 typedef struct _lcc_lexer_t
 {
