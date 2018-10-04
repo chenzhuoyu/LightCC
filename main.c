@@ -11,7 +11,7 @@ int main()
     while (!(lexer.flags & LCC_LXF_EOS))
     {
         printf("-------------------\n");
-        if (!(lcc_lexer_next(&lexer, NULL))) break;
+        if (!(lcc_lexer_next(&lexer))) break;
     }
 
     lcc_lexer_free(&lexer);

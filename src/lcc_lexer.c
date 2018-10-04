@@ -480,12 +480,6 @@ static char _lcc_error_default(
     return type != LCC_LXET_ERROR;
 }
 
-#pragma ide diagnostic push
-#pragma ide diagnostic ignored "missing_default_case"
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wswitch"
-
 static void _lcc_handle_substate(lcc_lexer_t *self)
 {
     /* check for EOF and EOL flags */
@@ -522,6 +516,8 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing chars or strings, definately an error */
             case LCC_LX_SUBSTATE_CHARS:
             case LCC_LX_SUBSTATE_STRING:
+            case LCC_LX_SUBSTATE_CHARS_ESCAPE:
+            case LCC_LX_SUBSTATE_STRING_ESCAPE:
             {
                 _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s", self->flags & LCC_LXF_EOF ? "EOF" : "EOL"));
                 return;
@@ -610,6 +606,9 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 case ';':
                 case '?':
                 {
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "missing_default_case"
+
                     /* assign operators */
                     switch (self->ch)
                     {
@@ -625,6 +624,8 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                         case ';': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SEMICOLON)); break;
                         case '?': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_QUESTION)); break;
                     }
+
+#pragma clang diagnostic pop
 
                     /* for sure this is the only character */
                     self->state = LCC_LX_STATE_ACCEPT;
@@ -706,8 +707,8 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
         // TODO: implement chars number string
         case LCC_LX_SUBSTATE_CHARS:
-        case LCC_LX_SUBSTATE_NUMBER:
         case LCC_LX_SUBSTATE_STRING:
+        case LCC_LX_SUBSTATE_NUMBER:
         {
             self->state = LCC_LX_STATE_SHIFT;
             lcc_token_buffer_reset(&(self->token_buffer));
@@ -716,223 +717,131 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
         /** very complex operator logic **/
 
-        case LCC_LX_SUBSTATE_OPERATOR_STAR:     /* * *= */
-        case LCC_LX_SUBSTATE_OPERATOR_SLASH:    /* / /= */
-        case LCC_LX_SUBSTATE_OPERATOR_PERCENT:  /* % %= */
-        case LCC_LX_SUBSTATE_OPERATOR_EQU:      /* = == */
-        case LCC_LX_SUBSTATE_OPERATOR_EXCL:     /* ! != */
-        case LCC_LX_SUBSTATE_OPERATOR_AMP:      /* & &= */
-        case LCC_LX_SUBSTATE_OPERATOR_BAR:      /* | |= */
-        case LCC_LX_SUBSTATE_OPERATOR_CARET:    /* ^ ^= */
-        {
-            /* got an equal sign */
-            if (self->ch == '=')
-            {
-                switch (self->substate)
-                {
-                    case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IMUL)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IDIV)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IMOD)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_EQ)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_NEQ)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IAND)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IOR)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IXOR)); break;
-                }
-            }
-            else
-            {
-                switch (self->substate)
-                {
-                    case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STAR)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PERCENT)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ASSIGN)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LNOT)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BAND)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BOR)); break;
-                    case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BXOR)); break;
-                }
-            }
-
-            /* accept the token, keep the character as needed */
-            self->state = (self->ch == '=') ? LCC_LX_STATE_ACCEPT : LCC_LX_STATE_ACCEPT_KEEP;
-            break;
+        #define ACCEPT1_OR_KEEP(expect, ac_token, keep_token) {                             \
+            if (self->ch == (expect))                                                       \
+            {                                                                               \
+                self->state = LCC_LX_STATE_ACCEPT;                                          \
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token));       \
+            }                                                                               \
+            else                                                                            \
+            {                                                                               \
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;                                     \
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(keep_token));     \
+            }                                                                               \
+                                                                                            \
+            break;                                                                          \
         }
 
-        /* + ++ += */
-        case LCC_LX_SUBSTATE_OPERATOR_PLUS:
-        {
-            switch (self->ch)
-            {
-                /* ++ */
-                case '+':
-                {
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_INCR));
-                    break;
-                }
-
-                /* += */
-                case '=':
-                {
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IADD));
-                    break;
-                }
-
-                /* + */
-                default:
-                {
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PLUS));
-                    break;
-                }
-            }
-
-            break;
+        #define ACCEPT2_OR_KEEP(expect1, ac_token1, expect2, ac_token2, keep_token) {       \
+            switch (self->ch)                                                               \
+            {                                                                               \
+                case expect1:                                                               \
+                {                                                                           \
+                    self->state = LCC_LX_STATE_ACCEPT;                                      \
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token1));  \
+                    break;                                                                  \
+                }                                                                           \
+                                                                                            \
+                case expect2:                                                               \
+                {                                                                           \
+                    self->state = LCC_LX_STATE_ACCEPT;                                      \
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token2));  \
+                    break;                                                                  \
+                }                                                                           \
+                                                                                            \
+                default:                                                                    \
+                {                                                                           \
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                                 \
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(keep_token)); \
+                    break;                                                                  \
+                }                                                                           \
+            }                                                                               \
+                                                                                            \
+            break;                                                                          \
         }
 
-        /* - -- -= */
-        case LCC_LX_SUBSTATE_OPERATOR_MINUS:
-        {
-            switch (self->ch)
-            {
-                /* -- */
-                case '-':
-                {
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_DECR));
-                    break;
-                }
-
-                /* -= */
-                case '=':
-                {
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ISUB));
-                    break;
-                }
-
-                /* - */
-                default:
-                {
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_MINUS));
-                    break;
-                }
-            }
-
-            break;
+        #define SHIFT_ACCEPT_OR_KEEP(expect1, shift, expect2, ac_token, keep_token) {       \
+            switch (self->ch)                                                               \
+            {                                                                               \
+                case expect1:                                                               \
+                {                                                                           \
+                    self->state = LCC_LX_STATE_SHIFT;                                       \
+                    self->substate = shift;                                                 \
+                    break;                                                                  \
+                }                                                                           \
+                                                                                            \
+                case expect2:                                                               \
+                {                                                                           \
+                    self->state = LCC_LX_STATE_ACCEPT;                                      \
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token));   \
+                    break;                                                                  \
+                }                                                                           \
+                                                                                            \
+                default:                                                                    \
+                {                                                                           \
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                                 \
+                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(keep_token)); \
+                    break;                                                                  \
+                }                                                                           \
+            }                                                                               \
+                                                                                            \
+            break;                                                                          \
         }
 
-        /* > >> >= >>= */
-        case LCC_LX_SUBSTATE_OPERATOR_GT:
-        {
-            switch (self->ch)
-            {
-                /* >> >>= */
-                case '>':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_OPERATOR_GT_GT;
-                    break;
-                }
+        /* one- or two-character operators */
+        case LCC_LX_SUBSTATE_OPERATOR_STAR    : ACCEPT1_OR_KEEP('=', LCC_OP_IMUL, LCC_OP_STAR   )   /* * *= */
+        case LCC_LX_SUBSTATE_OPERATOR_SLASH   : ACCEPT1_OR_KEEP('=', LCC_OP_IDIV, LCC_OP_SLASH  )   /* / /= */
+        case LCC_LX_SUBSTATE_OPERATOR_PERCENT : ACCEPT1_OR_KEEP('=', LCC_OP_IMOD, LCC_OP_PERCENT)   /* % %= */
+        case LCC_LX_SUBSTATE_OPERATOR_EQU     : ACCEPT1_OR_KEEP('=', LCC_OP_EQ  , LCC_OP_ASSIGN )   /* = == */
+        case LCC_LX_SUBSTATE_OPERATOR_EXCL    : ACCEPT1_OR_KEEP('=', LCC_OP_NEQ , LCC_OP_LNOT   )   /* ! != */
+        case LCC_LX_SUBSTATE_OPERATOR_AMP     : ACCEPT1_OR_KEEP('=', LCC_OP_IAND, LCC_OP_BAND   )   /* & &= */
+        case LCC_LX_SUBSTATE_OPERATOR_BAR     : ACCEPT1_OR_KEEP('=', LCC_OP_IOR , LCC_OP_BOR    )   /* | |= */
+        case LCC_LX_SUBSTATE_OPERATOR_CARET   : ACCEPT1_OR_KEEP('=', LCC_OP_IXOR, LCC_OP_BXOR   )   /* ^ ^= */
 
-                /* >= */
-                case '=':
-                {
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GEQ));
-                    break;
-                }
+        /* one- or two-character and incremental operators */
+        case LCC_LX_SUBSTATE_OPERATOR_PLUS    : ACCEPT2_OR_KEEP('=', LCC_OP_IADD, '+', LCC_OP_INCR, LCC_OP_PLUS )   /* + ++ += */
+        case LCC_LX_SUBSTATE_OPERATOR_MINUS   : ACCEPT2_OR_KEEP('=', LCC_OP_ISUB, '-', LCC_OP_DECR, LCC_OP_MINUS)   /* - -- -= */
 
-                /* > */
-                default:
-                {
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GT));
-                    break;
-                }
-            }
+        /* shift or comparison operators */
+        case LCC_LX_SUBSTATE_OPERATOR_GT      : SHIFT_ACCEPT_OR_KEEP('>', LCC_LX_SUBSTATE_OPERATOR_GT_GT, '=', LCC_OP_GEQ, LCC_OP_GT)   /* > >> >= >>= */
+        case LCC_LX_SUBSTATE_OPERATOR_LT      : SHIFT_ACCEPT_OR_KEEP('>', LCC_LX_SUBSTATE_OPERATOR_LT_LT, '=', LCC_OP_LEQ, LCC_OP_LT)   /* < << <= <<= */
 
-            break;
-        }
+        /* bit-shifting operators */
+        case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHR, LCC_OP_BSHR)  /* >> >>= */
+        case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHL, LCC_OP_BSHL)  /* << <<= */
 
-        /* < << <= <<= */
-        case LCC_LX_SUBSTATE_OPERATOR_LT:
-        {
-            switch (self->ch)
-            {
-                /* << <<= */
-                case '<':
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_OPERATOR_LT_LT;
-                    break;
-                }
-
-                /* <= */
-                case '=':
-                {
-                    self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LEQ));
-                    break;
-                }
-
-                /* < */
-                default:
-                {
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LT));
-                    break;
-                }
-            }
-
-            break;
-        }
-
-        /* >> >>= */
-        case LCC_LX_SUBSTATE_OPERATOR_GT_GT:
-        {
-            /* >>= */
-            if (self->ch == '=')
-            {
-                self->state = LCC_LX_STATE_ACCEPT;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ISHR));
-            }
-
-            /* >> */
-            else
-            {
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHR));
-            }
-
-            break;
-        }
-
-        /* << <<= */
-        case LCC_LX_SUBSTATE_OPERATOR_LT_LT:
-        {
-            if (self->ch == '=')
-            {
-                self->state = LCC_LX_STATE_ACCEPT;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ISHL));
-            }
-            else
-            {
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHL));
-            }
-
-            break;
-        }
+        #undef ACCEPT1_OR_KEEP
+        #undef ACCEPT2_OR_KEEP
+        #undef SHIFT_ACCEPT_OR_KEEP
     }
 }
 
-#pragma clang diagnostic pop
-#pragma ide diagnostic pop
+static void _lcc_handle_directive(lcc_lexer_t *self)
+{
+    /* update directive name */
+    if (!(self->flags & LCC_LXDN_MASK))
+    {
+        /* get the directive name token */
+        lcc_string_t *name = self->tokens.prev->ident;
+        const _lcc_directive_bits_t *pb;
+
+        /* find directive by name */
+        for (pb = DIRECTIVES; pb->name; pb++)
+            if (!(strcmp(pb->name, name->buf)))
+                break;
+
+        /* no such directive */
+        if (!(pb->name))
+        {
+            _lcc_lexer_error(self, lcc_string_from_format("Unknown compiler directive \"%s\"", name->buf));
+            return;
+        }
+
+        /* set the name bit, and remove the token */
+        self->flags |= pb->bits;
+        lcc_token_free(self->tokens.prev);
+    }
+}
 
 static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 {
@@ -1204,39 +1113,13 @@ char lcc_lexer_next(lcc_lexer_t *self)
             case LCC_LX_STATE_ACCEPT_KEEP:
             {
                 /* shift next character if needed */
-                if (self->state == LCC_LX_STATE_ACCEPT)
-                    self->state = LCC_LX_STATE_SHIFT;
-                else
-                    self->state = LCC_LX_STATE_GOT_CHAR;
+                self->state = (self->state == LCC_LX_STATE_ACCEPT) ? LCC_LX_STATE_SHIFT : LCC_LX_STATE_GOT_CHAR;
+                self->substate = LCC_LX_SUBSTATE_NULL;
 
                 /* still parsing directives, don't accept now */
                 if (self->flags & LCC_LXF_DIRECTIVE)
                 {
-                    /* update directive name */
-                    if (!(self->flags & LCC_LXDN_MASK))
-                    {
-                        /* get the directive name token */
-                        lcc_string_t *name = self->tokens.prev->ident;
-                        const _lcc_directive_bits_t *pb;
-
-                        /* find directive by name */
-                        for (pb = DIRECTIVES; pb->name; pb++)
-                            if (!(strcmp(pb->name, name->buf)))
-                                break;
-
-                        /* no such directive */
-                        if (!(pb->name))
-                        {
-                            _lcc_lexer_error(self, lcc_string_from_format("Unknown compiler directive \"%s\"", name->buf));
-                            break;
-                        }
-
-                        /* set the name bit, and remove the token */
-                        self->flags |= pb->bits;
-                        lcc_token_free(self->tokens.prev);
-                    }
-
-                    self->substate = LCC_LX_SUBSTATE_NULL;
+                    _lcc_handle_directive(self);
                     break;
                 }
 
@@ -1257,9 +1140,6 @@ char lcc_lexer_next(lcc_lexer_t *self)
                     lcc_token_free(self->tokens.next);
 
                 // TODO: accept token
-
-                /* reset sub-state */
-                self->substate = LCC_LX_SUBSTATE_NULL;
                 return 1;
             }
 
