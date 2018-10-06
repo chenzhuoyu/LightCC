@@ -1364,8 +1364,6 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             break;
         }
 
-        // TODO: implement decimal
-
         /* scientific notation of decimal numbers */
         case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
         {
