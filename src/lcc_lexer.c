@@ -1369,18 +1369,70 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* scientific notation of decimal numbers */
         case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
         {
+            switch (self->ch)
+            {
+                /* "signed" exponent */
+                case '+':
+                case '-':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* "unsigned" exponent */
+                case '0' ... '9':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* other characters are prohibited */
+                default:
+                {
+                    _lcc_lexer_error(self, "'+', '-' or digits expected");
+                    break;
+                }
+            }
+
             break;
         }
 
         /* scientific notation of decimal numbers - exponent part */
         case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP:
         {
+            /* not a digit anymore, accept but keep the character */
+            if (!(isdigit(self->ch)))
+            {
+                _lcc_commit_number(self);
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                break;
+            }
+
+            /* otherwise append to token buffer */
+            self->state = LCC_LX_STATE_SHIFT;
+            self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP;
+            lcc_token_buffer_append(&(self->token_buffer), self->ch);
             break;
         }
 
         /* scientific notation of decimal numbers - sign of exponent part */
         case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN:
         {
+            /* must be digits */
+            if (!(isdigit(self->ch)))
+            {
+                _lcc_lexer_error(self, "Digits expected");
+                break;
+            }
+
+            /* move to exponent state */
+            self->state = LCC_LX_STATE_SHIFT;
+            self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP;
+            lcc_token_buffer_append(&(self->token_buffer), self->ch);
             break;
         }
 
