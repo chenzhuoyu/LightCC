@@ -274,6 +274,7 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_OPERATOR_BAR,
     LCC_LX_SUBSTATE_OPERATOR_CARET,
     LCC_LX_SUBSTATE_OPERATOR_HASH,
+    LCC_LX_SUBSTATE_INCLUDE_FILE,
     LCC_LX_SUBSTATE_COMMENT_LINE,
     LCC_LX_SUBSTATE_COMMENT_BLOCK,
     LCC_LX_SUBSTATE_COMMENT_BLOCK_END,
@@ -303,23 +304,25 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXF_EOS             0x0000000000000004      /* End-Of-Source encountered */
 #define LCC_LXF_DIRECTIVE       0x0000000000000008      /* parsing compiler directive */
 #define LCC_LXF_CHAR_SEQ        0x0000000000000010      /* parsing character sequence rather than string */
-#define LCC_LXF_MASK            0x000000000000ffff      /* lexer flags mask */
+#define LCC_LXF_MASK            0x00000000000000ff      /* lexer flags mask */
 
-#define LCC_LXDN_INCLUDE        0x0000000000010000      /* #include directive */
-#define LCC_LXDN_DEFINE         0x0000000000020000      /* #define directive */
-#define LCC_LXDN_UNDEF          0x0000000000040000      /* #undef directive */
-#define LCC_LXDN_IF             0x0000000000080000      /* #if directive */
-#define LCC_LXDN_IFDEF          0x0000000000100000      /* #ifdef directive */
-#define LCC_LXDN_IFNDEF         0x0000000000200000      /* #ifndef directive */
-#define LCC_LXDN_ELSE           0x0000000000400000      /* #else directive */
-#define LCC_LXDN_ENDIF          0x0000000000800000      /* #endif directive */
-#define LCC_LXDN_PRAGMA         0x0000000001000000      /* #pragma directive */
-#define LCC_LXDN_MASK           0x00000000ffff0000      /* compiler directive name mask */
+#define LCC_LXDN_INCLUDE        0x0000000000000100      /* #include directive */
+#define LCC_LXDN_DEFINE         0x0000000000000200      /* #define directive */
+#define LCC_LXDN_UNDEF          0x0000000000000400      /* #undef directive */
+#define LCC_LXDN_IF             0x0000000000000800      /* #if directive */
+#define LCC_LXDN_IFDEF          0x0000000000001000      /* #ifdef directive */
+#define LCC_LXDN_IFNDEF         0x0000000000002000      /* #ifndef directive */
+#define LCC_LXDN_ELSE           0x0000000000004000      /* #else directive */
+#define LCC_LXDN_ENDIF          0x0000000000008000      /* #endif directive */
+#define LCC_LXDN_PRAGMA         0x0000000000010000      /* #pragma directive */
+#define LCC_LXDN_MASK           0x00000000000fff00      /* compiler directive name mask */
 
-#define LCC_LXDF_DEFINE_O       0x0000000100000000      /* object-style macro */
-#define LCC_LXDF_DEFINE_F       0x0000000200000000      /* function-style macro */
-#define LCC_LXDF_DEFINE_NS      0x0000000400000000      /* macro name already set */
-#define LCC_LXDF_DEFINE_MASK    0x0000000f00000000      /* #define directive flags mask */
+#define LCC_LXDF_DEFINE_O       0x0000000000100000      /* object-style macro */
+#define LCC_LXDF_DEFINE_F       0x0000000000200000      /* function-style macro */
+#define LCC_LXDF_DEFINE_NS      0x0000000000400000      /* macro name already set */
+#define LCC_LXDF_DEFINE_MASK    0x0000000000f00000      /* #define directive flags mask */
+
+#define LCC_LXDF_INCLUDE_SYS    0x0000000001000000      /* #include includes file from system headers */
 
 typedef struct _lcc_lexer_t
 {
@@ -334,6 +337,11 @@ typedef struct _lcc_lexer_t
     long flags;
     lcc_lexer_state_t state;
     lcc_lexer_substate_t substate;
+
+    /* current file info */
+    size_t col;
+    size_t row;
+    lcc_string_t *fname;
 
     /* current file and token */
     char ch;

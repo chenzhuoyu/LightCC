@@ -9,11 +9,13 @@ include_directories(include)
 set(LIGHTCC
         include/lcc_array.h
         include/lcc_lexer.h
+        include/lcc_map.h
         include/lcc_string.h
         include/lcc_string_array.h
         src/lcc_array.c
         src/lcc_lexer.c
+        src/lcc_map.c
         src/lcc_string.c
-        src/lcc_string_array.c src/lcc_map.c include/lcc_map.h)
+        src/lcc_string_array.c)
 
 add_executable(lcc main.c ${LIGHTCC})

@@ -1,6 +1,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <libgen.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -568,40 +569,62 @@ static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
     lcc_string_array_free(&(((lcc_file_t *)item)->lines));
 }
 
-static void _lcc_lexer_error(lcc_lexer_t *self, lcc_string_t *message)
+static void _lcc_lexer_error(lcc_lexer_t *self, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void _lcc_lexer_error(lcc_lexer_t *self, const char *fmt, ...)
 {
     /* invoke the error handler if any */
     if (self->error_fn)
     {
+        /* format the error message */
+        va_list args;
+        va_start(args, fmt);
+        lcc_string_t *message = lcc_string_from_format_va(fmt, args);
+
+        /* invoke the error handler */
         self->error_fn(
             self,
-            self->file->name,
-            self->file->row,
-            self->file->col,
+            self->fname,
+            self->row,
+            self->col,
             message,
             LCC_LXET_ERROR,
             self->error_data
         );
+
+        /* release the message string */
+        va_end(args);
+        lcc_string_unref(message);
     }
 
     /* advance state machine to REJECT */
     self->state = LCC_LX_STATE_REJECT;
 }
 
-static void _lcc_lexer_warning(lcc_lexer_t *self, lcc_string_t *message)
+static void _lcc_lexer_warning(lcc_lexer_t *self, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void _lcc_lexer_warning(lcc_lexer_t *self, const char *fmt, ...)
 {
     /* invoke the error handler if any */
     if (self->error_fn)
     {
+        /* format the warning message */
+        va_list args;
+        va_start(args, fmt);
+        lcc_string_t *message = lcc_string_from_format_va(fmt, args);
+
+        /* invoke the error handler */
         self->error_fn(
             self,
-            self->file->name,
-            self->file->row,
-            self->file->col,
+            self->fname,
+            self->row,
+            self->col,
             message,
             LCC_LXET_WARNING,
             self->error_data
         );
+
+        /* release the message string */
+        va_end(args);
+        lcc_string_unref(message);
     }
 }
 
@@ -681,7 +704,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* fire a warning when meets EOF */
                 if (self->flags & LCC_LXF_EOF)
                 {
-                    _lcc_lexer_warning(self, lcc_string_from("EOF when parsing block comment"));
+                    _lcc_lexer_warning(self, "EOF when parsing block comment");
                     break;
                 }
 
@@ -701,17 +724,18 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing chars or strings */
             case LCC_LX_SUBSTATE_STRING:
             case LCC_LX_SUBSTATE_STRING_ESCAPE:
+            case LCC_LX_SUBSTATE_INCLUDE_FILE:
             {
                 /* not a directive, it's an error */
                 if (!(self->flags & LCC_LXF_DIRECTIVE))
                 {
-                    _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s when parsing strings", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL"));
+                    _lcc_lexer_error(self, "Unexpected %s when parsing strings", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL");
                     return;
                 }
 
                 /* commit as string, but give a warning */
                 _lcc_commit_string(self);
-                _lcc_lexer_warning(self, lcc_string_from("Invalid preprocessor token"));
+                _lcc_lexer_warning(self, "Invalid preprocessor token");
                 break;
             }
 
@@ -723,13 +747,13 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* not a directive, it's an error */
                 if (!(self->flags & LCC_LXF_DIRECTIVE))
                 {
-                    _lcc_lexer_error(self, lcc_string_from_format("Unexpected %s when parsing numbers", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL"));
+                    _lcc_lexer_error(self, "Unexpected %s when parsing numbers", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL");
                     return;
                 }
 
                 /* commit as number, but give a warning */
                 _lcc_commit_number(self);
-                _lcc_lexer_warning(self, lcc_string_from("Invalid preprocessor token"));
+                _lcc_lexer_warning(self, "Invalid preprocessor token");
                 break;
             }
 
@@ -901,9 +925,9 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
                     /* other unknown characters */
                     if (isprint(self->ch))
-                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '%c'", self->ch));
+                        _lcc_lexer_error(self, "Invalid character '%c'", self->ch);
                     else
-                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '\\x%02x'", (uint8_t)(self->ch)));
+                        _lcc_lexer_error(self, "Invalid character '\\x%02x'", (uint8_t)(self->ch));
 
                     return;
                 }
@@ -925,9 +949,9 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
                     /* other unknown characters */
                     if (isprint(self->ch))
-                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '%c'", self->ch));
+                        _lcc_lexer_error(self, "Invalid character '%c'", self->ch);
                     else
-                        _lcc_lexer_error(self, lcc_string_from_format("Invalid character '\\x%02x'", (uint8_t)(self->ch)));
+                        _lcc_lexer_error(self, "Invalid character '\\x%02x'", (uint8_t)(self->ch));
 
                     return;
                 }
@@ -1165,7 +1189,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 case '8':
                 case '9':
                 {
-                    _lcc_lexer_error(self, lcc_string_from_format("Invalid octal digit '%c'", self->ch));
+                    _lcc_lexer_error(self, "Invalid octal digit '%c'", self->ch);
                     break;
                 }
 
@@ -1250,9 +1274,9 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             else
             {
                 if (isprint(self->ch))
-                    _lcc_lexer_error(self, lcc_string_from_format("Invalid hexadecimal digit '%c'", self->ch));
+                    _lcc_lexer_error(self, "Invalid hexadecimal digit '%c'", self->ch);
                 else
-                    _lcc_lexer_error(self, lcc_string_from_format("Invalid hexadecimal digit '\\x%02x'", (uint8_t)self->ch));
+                    _lcc_lexer_error(self, "Invalid hexadecimal digit '\\x%02x'", (uint8_t)self->ch);
             }
 
             break;
@@ -1432,8 +1456,6 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     break;                                                                  \
                 }                                                                           \
             }                                                                               \
-                                                                                            \
-            break;                                                                          \
         }
 
         /* one- or two-character operators */
@@ -1449,13 +1471,55 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         case LCC_LX_SUBSTATE_OPERATOR_PLUS    : ACCEPT2_OR_KEEP('+', LCC_OP_INCR, '=', LCC_OP_IADD, LCC_OP_PLUS )   /* + ++ += */
         case LCC_LX_SUBSTATE_OPERATOR_MINUS   : ACCEPT2_OR_KEEP('-', LCC_OP_DECR, '=', LCC_OP_ISUB, LCC_OP_MINUS)   /* - -- -= */
 
-        /* shift or comparison operators */
-        case LCC_LX_SUBSTATE_OPERATOR_GT      : SHIFT_ACCEPT_OR_KEEP('>', LCC_LX_SUBSTATE_OPERATOR_GT_GT, '=', LCC_OP_GEQ, LCC_OP_GT)   /* > >> >= >>= */
-        case LCC_LX_SUBSTATE_OPERATOR_LT      : SHIFT_ACCEPT_OR_KEEP('>', LCC_LX_SUBSTATE_OPERATOR_LT_LT, '=', LCC_OP_LEQ, LCC_OP_LT)   /* < << <= <<= */
-
         /* bit-shifting operators */
         case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHR, LCC_OP_BSHR)  /* >> >>= */
         case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHL, LCC_OP_BSHL)  /* << <<= */
+
+        /* > >> >= >>= */
+        case LCC_LX_SUBSTATE_OPERATOR_GT:
+        {
+            SHIFT_ACCEPT_OR_KEEP('>', LCC_LX_SUBSTATE_OPERATOR_GT_GT, '=', LCC_OP_GEQ, LCC_OP_GT)
+            break;
+        }
+
+        /* < << <= <<=, or #include <...> file name */
+        case LCC_LX_SUBSTATE_OPERATOR_LT:
+        {
+            /* not parsing #include directive */
+            if (!(self->flags & LCC_LXDN_INCLUDE))
+            {
+                SHIFT_ACCEPT_OR_KEEP('<', LCC_LX_SUBSTATE_OPERATOR_LT_LT, '=', LCC_OP_LEQ, LCC_OP_LT)
+                break;
+            }
+
+            /* otherwise parse as file name */
+            self->state = LCC_LX_STATE_SHIFT;
+            self->flags |= LCC_LXDF_INCLUDE_SYS;
+            self->substate = LCC_LX_SUBSTATE_INCLUDE_FILE;
+            lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            break;
+        }
+
+        #undef ACCEPT1_OR_KEEP
+        #undef ACCEPT2_OR_KEEP
+        #undef SHIFT_ACCEPT_OR_KEEP
+
+        /* include file name (#include <...> only) */
+        case LCC_LX_SUBSTATE_INCLUDE_FILE:
+        {
+            if (self->ch == '>')
+            {
+                _lcc_commit_string(self);
+                self->state = LCC_LX_STATE_ACCEPT;
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            }
+
+            break;
+        }
 
         /* macro operators */
         case LCC_LX_SUBSTATE_OPERATOR_HASH:
@@ -1473,10 +1537,6 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
             break;
         }
-
-        #undef ACCEPT1_OR_KEEP
-        #undef ACCEPT2_OR_KEEP
-        #undef SHIFT_ACCEPT_OR_KEEP
 
         /* block comment, line comment or "/", "/=" */
         case LCC_LX_SUBSTATE_OPERATOR_SLASH:
@@ -1547,34 +1607,121 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
 static void _lcc_handle_directive(lcc_lexer_t *self)
 {
-    /* Special Case :: "#define" macro
-     * set a special flag after macro name parsed successfully */
-    if (self->flags & LCC_LXDN_DEFINE)
-        self->flags |= LCC_LXDF_DEFINE_NS;
-
-    /* update directive name */
-    if (!(self->flags & LCC_LXDN_MASK))
+    lcc_string_t *s = lcc_token_to_string(self->tokens.prev);
+    printf("DIRECTIVE TOKEN: %s\n", s->buf);
+    lcc_string_unref(s);
+    switch (self->flags & LCC_LXDN_MASK)
     {
-        /* get the directive name token */
-        lcc_string_t *name = self->tokens.prev->ident;
-        const _lcc_directive_bits_t *pb;
-
-        /* find directive by name */
-        for (pb = DIRECTIVES; pb->name; pb++)
-            if (!(strcmp(pb->name, name->buf)))
-                break;
-
-        /* no such directive */
-        if (!(pb->name))
+        /* update directive name if it's the first token */
+        case 0:
         {
-            _lcc_lexer_error(self, lcc_string_from_format("Unknown compiler directive \"%s\"", name->buf));
-            return;
+            /* get the directive name token */
+            lcc_string_t *name = self->tokens.prev->ident;
+            const _lcc_directive_bits_t *pb;
+
+            /* find directive by name */
+            for (pb = DIRECTIVES; pb->name; pb++)
+                if (!(strcmp(pb->name, name->buf)))
+                    break;
+
+            /* no such directive */
+            if (!(pb->name))
+            {
+                _lcc_lexer_error(self, "Unknown compiler directive \"%s\"", name->buf);
+                return;
+            }
+
+            /* set the name bit, and remove the token */
+            self->flags |= pb->bits;
+            lcc_token_free(self->tokens.prev);
+            break;
         }
 
-        /* set the name bit, and remove the token */
-        self->flags |= pb->bits;
-        lcc_token_free(self->tokens.prev);
+        /* Special Case :: "#define" directive
+         * set a special flag after macro name parsed successfully
+         * required for identifying object-style or function-style macro */
+        case LCC_LXDN_DEFINE:
+        {
+            self->flags |= LCC_LXDF_DEFINE_NS;
+            break;
+        }
+
+        /* these directives are not handled here */
+        case LCC_LXDN_INCLUDE:
+        case LCC_LXDN_UNDEF:
+        case LCC_LXDN_IF:
+        case LCC_LXDN_IFDEF:
+        case LCC_LXDN_IFNDEF:
+        case LCC_LXDN_ELSE:
+        case LCC_LXDN_ENDIF:
+        case LCC_LXDN_PRAGMA:
+            break;
+
+        /* unknown bit-mask, should not happen */
+        default:
+        {
+            fprintf(stderr, "*** FATAL: unknown directive flags %.16lx\n", self->flags);
+            abort();
+        }
     }
+}
+
+static void _lcc_commit_directive(lcc_lexer_t *self)
+{
+    // TODO: commit directives
+    /* check directive type */
+    switch (self->flags & LCC_LXDN_MASK)
+    {
+        /* "#include" directive */
+        case LCC_LXDN_INCLUDE:
+
+        /* "#define" directive */
+        case LCC_LXDN_DEFINE:
+
+        /* "#undef" directive */
+        case LCC_LXDN_UNDEF:
+
+        /* "#if" directive */
+        case LCC_LXDN_IF:
+
+        /* "#ifdef" directive */
+        case LCC_LXDN_IFDEF:
+
+        /* "#ifndef" directive */
+        case LCC_LXDN_IFNDEF:
+
+        /* "#else" directive */
+        case LCC_LXDN_ELSE:
+
+        /* "#endif" directive */
+        case LCC_LXDN_ENDIF:
+
+        /* "#pragma" directive */
+        case LCC_LXDN_PRAGMA:
+            break;
+
+        /* unknown bit-mask, should not happen */
+        default:
+        {
+            fprintf(stderr, "*** FATAL: unknown directive flags %.16lx\n", self->flags);
+            abort();
+        }
+    }
+
+    /* clear directive flags */
+    self->flags &= LCC_LXF_MASK;
+    self->flags &= ~LCC_LXF_DIRECTIVE;
+
+    /* should be no more tokens left */
+    if (self->tokens.next != &(self->tokens))
+    {
+        _lcc_lexer_error(self, "Redundent directive parameter");
+        return;
+    }
+
+    /* reset state and sub-state */
+    self->state = LCC_LX_STATE_SHIFT;
+    self->substate = LCC_LX_SUBSTATE_NULL;
 }
 
 static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
@@ -1601,6 +1748,10 @@ static inline lcc_string_t *_lcc_get_dir_name(lcc_string_t *name)
 
 void lcc_lexer_free(lcc_lexer_t *self)
 {
+    /* clear old file name if any */
+    if (self->fname)
+        lcc_string_unref(self->fname);
+
     /* release all chained tokens */
     while (self->tokens.next != &(self->tokens))
         lcc_token_free(self->tokens.next);
@@ -1635,6 +1786,11 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     /* token list and token buffer */
     lcc_token_init(&(self->tokens));
     lcc_token_buffer_init(&(self->token_buffer));
+
+    /* initial file info */
+    self->col = file.col;
+    self->row = file.row;
+    self->fname = lcc_string_ref(file.name);
 
     /* initial lexer state */
     self->ch = 0;
@@ -1685,7 +1841,7 @@ char lcc_lexer_advance(lcc_lexer_t *self)
                 /* limit maximum line length */
                 if (line->len > LCC_LEXER_MAX_LINE_LEN)
                 {
-                    _lcc_lexer_error(self, lcc_string_from("Line too long"));
+                    _lcc_lexer_error(self, "Line too long");
                     break;
                 }
 
@@ -1699,6 +1855,15 @@ char lcc_lexer_advance(lcc_lexer_t *self)
                 /* read the current character */
                 self->ch = line->buf[file->col];
                 file->col++;
+
+                /* clear old file name if any */
+                if (self->fname)
+                    lcc_string_unref(self->fname);
+
+                /* save the current file info */
+                self->col = self->file->col;
+                self->row = self->file->row;
+                self->fname = lcc_string_ref(self->file->name);
 
                 /* check current character */
                 switch (self->ch)
@@ -1723,7 +1888,7 @@ char lcc_lexer_advance(lcc_lexer_t *self)
                         /* line continuation, but with whitespaces after "\\",
                          * issue a warning and move to next line */
                         self->state = LCC_LX_STATE_NEXT_LINE_CONT;
-                        _lcc_lexer_warning(self, lcc_string_from("Whitespaces after line continuation"));
+                        _lcc_lexer_warning(self, "Whitespaces after line continuation");
                         break;
                     }
 
@@ -1810,8 +1975,7 @@ char lcc_lexer_advance(lcc_lexer_t *self)
 
                 /* Special Case :: "#define" compiler directive
                  * distingush object-style and function-style macros */
-                if ((self->flags & LCC_LXF_DIRECTIVE) &&
-                    (self->flags & LCC_LXDN_DEFINE) &&
+                if ((self->flags & LCC_LXDN_DEFINE) &&
                     (self->flags & LCC_LXDF_DEFINE_MASK) == LCC_LXDF_DEFINE_NS)
                 {
                     if (self->ch == '(')
@@ -1837,26 +2001,8 @@ char lcc_lexer_advance(lcc_lexer_t *self)
             /* commit parsed compiler directive */
             case LCC_LX_STATE_COMMIT:
             {
-                // TODO: commit directive
-                printf("** commit directive %.16lx\n", self->flags);
-                for (lcc_token_t *t = self->tokens.next; t != &(self->tokens); t = t->next)
-                {
-                    lcc_string_t *ts = lcc_token_to_string(t);
-                    printf("%s\n", ts->buf);
-                    lcc_string_unref(ts);
-                }
-                printf("** commit directive done\n");
-                while (self->tokens.next != &(self->tokens))
-                    lcc_token_free(self->tokens.next);
-
-                /* clear directive flags */
-                self->flags &= LCC_LXF_MASK;
-                self->flags &= ~LCC_LXF_DIRECTIVE;
+                _lcc_commit_directive(self);
                 self->file->flags &= ~LCC_FF_LNODIR;
-
-                /* reset state and sub-state */
-                self->state = LCC_LX_STATE_SHIFT;
-                self->substate = LCC_LX_SUBSTATE_NULL;
                 break;
             }
 
