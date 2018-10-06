@@ -187,6 +187,7 @@ lcc_token_t *lcc_token_from_number       (lcc_string_t       *value);
 
 const char *lcc_token_kw_name(lcc_keyword_t value);
 const char *lcc_token_op_name(lcc_operator_t value);
+lcc_string_t *lcc_token_as_string(lcc_token_t *self);
 lcc_string_t *lcc_token_to_string(lcc_token_t *self);
 
 /*** Source File ***/
@@ -306,23 +307,30 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXF_CHAR_SEQ        0x0000000000000010      /* parsing character sequence rather than string */
 #define LCC_LXF_MASK            0x00000000000000ff      /* lexer flags mask */
 
-#define LCC_LXDN_INCLUDE        0x0000000000000100      /* #include directive */
-#define LCC_LXDN_DEFINE         0x0000000000000200      /* #define directive */
-#define LCC_LXDN_UNDEF          0x0000000000000400      /* #undef directive */
-#define LCC_LXDN_IF             0x0000000000000800      /* #if directive */
-#define LCC_LXDN_IFDEF          0x0000000000001000      /* #ifdef directive */
-#define LCC_LXDN_IFNDEF         0x0000000000002000      /* #ifndef directive */
-#define LCC_LXDN_ELSE           0x0000000000004000      /* #else directive */
-#define LCC_LXDN_ENDIF          0x0000000000008000      /* #endif directive */
-#define LCC_LXDN_PRAGMA         0x0000000000010000      /* #pragma directive */
-#define LCC_LXDN_MASK           0x00000000000fff00      /* compiler directive name mask */
+#define LCC_LXDN_NULL           0x0000000000000100      /* # directive (null directive, does nothing) */
+#define LCC_LXDN_INCLUDE        0x0000000000000200      /* #include directive */
+#define LCC_LXDN_DEFINE         0x0000000000000400      /* #define directive */
+#define LCC_LXDN_UNDEF          0x0000000000000800      /* #undef directive */
+#define LCC_LXDN_IF             0x0000000000001000      /* #if directive */
+#define LCC_LXDN_IFDEF          0x0000000000002000      /* #ifdef directive */
+#define LCC_LXDN_IFNDEF         0x0000000000004000      /* #ifndef directive */
+#define LCC_LXDN_ELIF           0x0000000000008000      /* #else directive */
+#define LCC_LXDN_ELSE           0x0000000000010000      /* #else directive */
+#define LCC_LXDN_ENDIF          0x0000000000020000      /* #endif directive */
+#define LCC_LXDN_PRAGMA         0x0000000000040000      /* #pragma directive */
+#define LCC_LXDN_ERROR          0x0000000000080000      /* #error directive */
+#define LCC_LXDN_WARNING        0x0000000000100000      /* #warning directive */
+#define LCC_LXDN_LINE           0x0000000000200000      /* #line directive */
+#define LCC_LXDN_SCCS           0x0000000000400000      /* #sccs directive */
+#define LCC_LXDN_MASK           0x0000000000ffff00      /* compiler directive name mask */
 
-#define LCC_LXDF_DEFINE_O       0x0000000000100000      /* object-style macro */
-#define LCC_LXDF_DEFINE_F       0x0000000000200000      /* function-style macro */
-#define LCC_LXDF_DEFINE_NS      0x0000000000400000      /* macro name already set */
-#define LCC_LXDF_DEFINE_MASK    0x0000000000f00000      /* #define directive flags mask */
+#define LCC_LXDF_DEFINE_O       0x0000000001000000      /* object-style macro */
+#define LCC_LXDF_DEFINE_F       0x0000000002000000      /* function-style macro */
+#define LCC_LXDF_DEFINE_NS      0x0000000004000000      /* macro name already set */
+#define LCC_LXDF_DEFINE_MASK    0x000000000f000000      /* #define directive flags mask */
 
-#define LCC_LXDF_INCLUDE_SYS    0x0000000001000000      /* #include includes file from system headers */
+#define LCC_LXDF_INCLUDE_SYS    0x0000000010000000      /* #include includes file from system headers */
+#define LCC_LXDF_INCLUDE_NEXT   0x0000000020000000      /* #include_next directive */
 
 typedef struct _lcc_lexer_t
 {
