@@ -2170,15 +2170,12 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         /* "#pragma" directive */
         case LCC_LXDN_PRAGMA:
         {
-            // TODO: handle pragma
-            printf("PRAGMA:\n");
+            /* doesn't care what tokens given */
             while (self->tokens.next != &(self->tokens))
-            {
-                lcc_string_t *s = lcc_token_to_string(self->tokens.next);
-                printf(">> %s\n", s->buf);
-                lcc_string_unref(s);
                 lcc_token_free(self->tokens.next);
-            }
+
+            /* not supported */
+            _lcc_lexer_warning(self, "#pragma directive is ignored");
             break;
         }
 
@@ -2208,20 +2205,19 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 lcc_token_free(self->tokens.next);
 
             /* not supported */
-            _lcc_lexer_warning(self, "#line directive is not supported");
+            _lcc_lexer_warning(self, "#line directive is ignored");
             break;
         }
 
         /* "#sccs" directive */
         case LCC_LXDN_SCCS:
         {
+            /* extract the SCCS message */
             lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing SCCS message");
             lcc_string_t *message = _LCC_ENSURE_STRING(self, token, "SCCS message must be a string");
 
-            // TODO: handle SCCS
-            printf("SCCS: %s\n", message->buf);
-
-            /* release the token */
+            /* add to SCCS messages and release the token */
+            lcc_string_array_append(&(self->sccs_msgs), lcc_string_ref(message));
             lcc_token_free(token);
             break;
         }
@@ -2275,9 +2271,12 @@ void lcc_lexer_free(lcc_lexer_t *self)
     while (self->tokens.next != &(self->tokens))
         lcc_token_free(self->tokens.next);
 
-    /* clear other tables */
+    /* clear file list and token buffer */
     lcc_array_free(&(self->files));
     lcc_token_buffer_free(&(self->token_buffer));
+
+    /* clear other tables */
+    lcc_string_array_free(&(self->sccs_msgs));
     lcc_string_array_free(&(self->include_paths));
     lcc_string_array_free(&(self->library_paths));
 }
@@ -2296,7 +2295,8 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     lcc_token_init(&(self->tokens));
     lcc_token_buffer_init(&(self->token_buffer));
 
-    /* initial include and library search paths */
+    /* other tables */
+    lcc_string_array_init(&(self->sccs_msgs));
     lcc_string_array_init(&(self->include_paths));
     lcc_string_array_init(&(self->library_paths));
 

@@ -338,6 +338,7 @@ typedef struct _lcc_lexer_t
     int gnuext;
     lcc_map_t psyms;
     lcc_array_t files;
+    lcc_string_array_t sccs_msgs;
     lcc_string_array_t include_paths;
     lcc_string_array_t library_paths;
 
