@@ -45,7 +45,7 @@ void *lcc_array_get(lcc_array_t *self, size_t index)
         return PTR_INDEX(self, index);
 }
 
-void *lcc_array_set(lcc_array_t *self, size_t index, void *data)
+void *lcc_array_set(lcc_array_t *self, size_t index, const void *data)
 {
     /* check for index */
     if (index >= self->count)
@@ -80,16 +80,6 @@ char lcc_array_pop(lcc_array_t *self, void *data)
     return 1;
 }
 
-void lcc_array_append(lcc_array_t *self, void *data)
-{
-    /* resize the memory and counter */
-    self->count++;
-    self->items = realloc(self->items, self->count * self->item_size);
-
-    /* copy new item */
-    memcpy(PTR_INDEX(self, self->count - 1), data, self->item_size);
-}
-
 char lcc_array_remove(lcc_array_t *self, size_t index)
 {
     /* check for index */
@@ -114,4 +104,14 @@ char lcc_array_remove(lcc_array_t *self, size_t index)
     self->count--;
     self->items = realloc(self->items, self->count * self->item_size);
     return 1;
+}
+
+void lcc_array_append(lcc_array_t *self, const void *data)
+{
+    /* resize the memory and counter */
+    self->count++;
+    self->items = realloc(self->items, self->count * self->item_size);
+
+    /* copy new item */
+    memcpy(PTR_INDEX(self, self->count - 1), data, self->item_size);
 }

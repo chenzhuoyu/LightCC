@@ -29,10 +29,10 @@ void lcc_array_init(lcc_array_t *self, size_t item_size, lcc_array_dtor_fn dtor,
 
 void *lcc_array_top(lcc_array_t *self);
 void *lcc_array_get(lcc_array_t *self, size_t index);
-void *lcc_array_set(lcc_array_t *self, size_t index, void *data);
+void *lcc_array_set(lcc_array_t *self, size_t index, const void *data);
 
 char lcc_array_pop(lcc_array_t *self, void *data);
-void lcc_array_append(lcc_array_t *self, void *data);
 char lcc_array_remove(lcc_array_t *self, size_t index);
+void lcc_array_append(lcc_array_t *self, const void *data);
 
 #endif /* LCC_ARRAY_H */

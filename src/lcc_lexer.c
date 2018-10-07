@@ -2083,8 +2083,9 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
-            // TODO: handle undef
-            printf("UNDEF: %s\n", macro->buf);
+            /* undefine the macro */
+            if (!(lcc_map_pop(&(self->psyms), macro, NULL)))
+                _lcc_lexer_warning(self, "Macro \"%s\" was not defined", macro->buf);
 
             /* release the token */
             lcc_token_free(token);
@@ -2261,6 +2262,20 @@ static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
     return 1;
 }
 
+static void _lcc_psym_dtor(struct _lcc_map_t *self, void *value, void *data)
+{
+    /* get the token pointer */
+    lcc_token_t *p = value;
+    lcc_token_t *q = p->next;
+
+    /* release all tokens */
+    while (p != q)
+    {
+        lcc_token_free(q);
+        q = p->next;
+    }
+}
+
 void lcc_lexer_free(lcc_lexer_t *self)
 {
     /* clear old file name if any */
@@ -2271,12 +2286,13 @@ void lcc_lexer_free(lcc_lexer_t *self)
     while (self->tokens.next != &(self->tokens))
         lcc_token_free(self->tokens.next);
 
-    /* clear file list and token buffer */
-    lcc_array_free(&(self->files));
-    lcc_token_buffer_free(&(self->token_buffer));
+    /* clear directive related tables */
+    lcc_map_free(&(self->psyms));
+    lcc_string_array_free(&(self->sccs_msgs));
 
     /* clear other tables */
-    lcc_string_array_free(&(self->sccs_msgs));
+    lcc_array_free(&(self->files));
+    lcc_token_buffer_free(&(self->token_buffer));
     lcc_string_array_free(&(self->include_paths));
     lcc_string_array_free(&(self->library_paths));
 }
@@ -2287,9 +2303,18 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     if (file.flags & LCC_FF_INVALID)
         return 0;
 
+    /* macro sources */
+    lcc_file_t psrc = {
+        .col = 0,
+        .row = 0,
+        .name = lcc_string_from("<define>"),
+        .flags = 0,
+    };
+
     /* initial source file */
+    lcc_map_init(&(self->psyms), sizeof(lcc_token_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
-    lcc_array_append(&(self->files), &file);
+    lcc_string_array_init(&(psrc.lines));
 
     /* token list and token buffer */
     lcc_token_init(&(self->tokens));
@@ -2300,12 +2325,14 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     lcc_string_array_init(&(self->include_paths));
     lcc_string_array_init(&(self->library_paths));
 
-    // TODO: init predefined syms (psyms)
+    /* add initial source files */
+    lcc_array_append(&(self->files), &file);
+    lcc_array_append(&(self->files), &psrc);
 
     /* initial file info */
-    self->col = file.col;
-    self->row = file.row;
-    self->fname = lcc_string_ref(file.name);
+    self->col = 0;
+    self->row = 0;
+    self->fname = lcc_string_ref(psrc.name);
 
     /* initial lexer state */
     self->ch = 0;
@@ -2320,73 +2347,37 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     /* default error handling */
     self->error_fn = _lcc_error_default;
     self->error_data = NULL;
+
+    /* version symbols */
+    lcc_lexer_add_define(self, "__LCC__", "1");
+    lcc_lexer_add_define(self, "__GNUC__", "4");
+
+    /* standard defines */
+    lcc_lexer_add_define(self, "__STDC__", "1");
+    lcc_lexer_add_define(self, "__STDC_HOSTED__", "1");
+    lcc_lexer_add_define(self, "__STDC_VERSION__", "199901L");
+
+    /* platform specific symbols */
+    lcc_lexer_add_define(self, "unix", "1");
+    lcc_lexer_add_define(self, "__unix", "1");
+    lcc_lexer_add_define(self, "__unix__", "1");
+    lcc_lexer_add_define(self, "__x86_64__", "1");
+
+    /* data model */
+    lcc_lexer_add_define(self, "__LP64__", "1");
+    lcc_lexer_add_define(self, "__SIZE_TYPE__", "unsigned long");
+    lcc_lexer_add_define(self, "__PTRDIFF_TYPE__", "long");
+
+    /* other built-in types */
+    lcc_lexer_add_define(self, "__WINT_TYPE__", "unsigned int");
+    lcc_lexer_add_define(self, "__WCHAR_TYPE__", "int");
     return 1;
 }
 
 char lcc_lexer_advance(lcc_lexer_t *self)
 {
-    // FIXME: remove this before release
-    static const char *state_names[] = {
-        "LCC_LX_STATE_INIT",
-        "LCC_LX_STATE_SHIFT",
-        "LCC_LX_STATE_POP_FILE",
-        "LCC_LX_STATE_NEXT_LINE",
-        "LCC_LX_STATE_NEXT_LINE_CONT",
-        "LCC_LX_STATE_GOT_CHAR",
-        "LCC_LX_STATE_GOT_DIRECTIVE",
-        "LCC_LX_STATE_COMMIT",
-        "LCC_LX_STATE_ACCEPT",
-        "LCC_LX_STATE_ACCEPT_KEEP",
-        "LCC_LX_STATE_REJECT",
-        "LCC_LX_STATE_END",
-    };
-    static const char *substate_names[] = {
-        "LCC_LX_SUBSTATE_NULL",
-        "LCC_LX_SUBSTATE_NAME",
-        "LCC_LX_SUBSTATE_STRING",
-        "LCC_LX_SUBSTATE_STRING_ESCAPE",
-        "LCC_LX_SUBSTATE_NUMBER",
-        "LCC_LX_SUBSTATE_NUMBER_ZERO",
-        "LCC_LX_SUBSTATE_NUMBER_OR_OP",
-        "LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX",
-        "LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D",
-        "LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT",
-        "LCC_LX_SUBSTATE_NUMBER_INTEGER_U",
-        "LCC_LX_SUBSTATE_NUMBER_INTEGER_L",
-        "LCC_LX_SUBSTATE_NUMBER_DECIMAL",
-        "LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI",
-        "LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP",
-        "LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN",
-        "LCC_LX_SUBSTATE_OPERATOR_PLUS",
-        "LCC_LX_SUBSTATE_OPERATOR_MINUS",
-        "LCC_LX_SUBSTATE_OPERATOR_STAR",
-        "LCC_LX_SUBSTATE_OPERATOR_SLASH",
-        "LCC_LX_SUBSTATE_OPERATOR_PERCENT",
-        "LCC_LX_SUBSTATE_OPERATOR_EQU",
-        "LCC_LX_SUBSTATE_OPERATOR_GT",
-        "LCC_LX_SUBSTATE_OPERATOR_GT_GT",
-        "LCC_LX_SUBSTATE_OPERATOR_LT",
-        "LCC_LX_SUBSTATE_OPERATOR_LT_LT",
-        "LCC_LX_SUBSTATE_OPERATOR_EXCL",
-        "LCC_LX_SUBSTATE_OPERATOR_AMP",
-        "LCC_LX_SUBSTATE_OPERATOR_BAR",
-        "LCC_LX_SUBSTATE_OPERATOR_CARET",
-        "LCC_LX_SUBSTATE_OPERATOR_HASH",
-        "LCC_LX_SUBSTATE_INCLUDE_FILE",
-        "LCC_LX_SUBSTATE_COMMENT_LINE",
-        "LCC_LX_SUBSTATE_COMMENT_BLOCK",
-        "LCC_LX_SUBSTATE_COMMENT_BLOCK_END",
-    };
     for (;;)
     {
-        printf(
-            "state=%-27s, substate=%-43s, file=%s:%zu:%zu\n",
-            state_names[self->state],
-            substate_names[self->substate],
-            self->fname->buf,
-            self->row,
-            self->col
-        );
         switch (self->state)
         {
             /* initial lexer state */
@@ -2634,7 +2625,28 @@ char lcc_lexer_advance(lcc_lexer_t *self)
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value)
 {
-    // TODO: add define
+    /* must be in initial state */
+    if (self->state != LCC_LX_STATE_INIT)
+    {
+        fprintf(stderr, "*** FATAL: cannot add symbols in the middle of parsing");
+        abort();
+    }
+
+    /* add to predefined sources */
+    if (!value)
+    {
+        lcc_string_array_append(
+            &(self->file->lines),
+            lcc_string_from_format("#define %s", name)
+        );
+    }
+    else
+    {
+        lcc_string_array_append(
+            &(self->file->lines),
+            lcc_string_from_format("#define %s %s", name, value)
+        );
+    }
 }
 
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path)
