@@ -98,6 +98,7 @@ typedef enum _lcc_operator_t
     LCC_OP_POINT,           /* Point            .   */
     LCC_OP_SEMICOLON,       /* Semicolon        ;   */
     LCC_OP_DEREF,           /* Dereferencing    ->  */
+    LCC_OP_ELLIPSIS,        /* Ellipsis         ... */
     LCC_OP_STR,             /* Stringize (PP)   #   */
     LCC_OP_CONCAT,          /* Concat (PP)      ##  */
 } lcc_operator_t;
@@ -167,7 +168,9 @@ void lcc_token_free(lcc_token_t *self);
 void lcc_token_init(lcc_token_t *self);
 void lcc_token_attach(lcc_token_t *self, lcc_token_t *next);
 
-lcc_token_t *lcc_token_from_eof          (void);
+lcc_token_t *lcc_token_new(void);
+lcc_token_t *lcc_token_detach(lcc_token_t *self);
+
 lcc_token_t *lcc_token_from_ident        (lcc_string_t       *ident);
 lcc_token_t *lcc_token_from_keyword      (lcc_keyword_t       keyword);
 lcc_token_t *lcc_token_from_operator     (lcc_operator_t      operator);
@@ -275,6 +278,7 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_OPERATOR_BAR,
     LCC_LX_SUBSTATE_OPERATOR_CARET,
     LCC_LX_SUBSTATE_OPERATOR_HASH,
+    LCC_LX_SUBSTATE_OPERATOR_ELLIPSIS,
     LCC_LX_SUBSTATE_INCLUDE_FILE,
     LCC_LX_SUBSTATE_COMMENT_LINE,
     LCC_LX_SUBSTATE_COMMENT_BLOCK,
@@ -327,10 +331,20 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXDF_DEFINE_O       0x0000000001000000      /* object-style macro */
 #define LCC_LXDF_DEFINE_F       0x0000000002000000      /* function-style macro */
 #define LCC_LXDF_DEFINE_NS      0x0000000004000000      /* macro name already set */
-#define LCC_LXDF_DEFINE_MASK    0x000000000f000000      /* #define directive flags mask */
+#define LCC_LXDF_DEFINE_VAR     0x0000000008000000      /* variadic function-like macro */
+#define LCC_LXDF_DEFINE_FINE    0x0000000010000000      /* macro is been checked */
+#define LCC_LXDF_DEFINE_MASK    0x00000000ff000000      /* #define directive flags mask */
 
-#define LCC_LXDF_INCLUDE_SYS    0x0000000010000000      /* #include includes file from system headers */
-#define LCC_LXDF_INCLUDE_NEXT   0x0000000020000000      /* #include_next directive */
+#define LCC_LXDF_INCLUDE_SYS    0x0000000100000000      /* #include includes file from system headers */
+#define LCC_LXDF_INCLUDE_NEXT   0x0000000200000000      /* #include_next directive */
+
+typedef enum _lcc_lexer_define_state_t
+{
+    LCC_LX_DEFSTATE_INIT,
+    LCC_LX_DEFSTATE_PUSH_ARG,
+    LCC_LX_DEFSTATE_DELIM_OR_END,
+    LCC_LX_DEFSTATE_END,
+} lcc_lexer_define_state_t;
 
 typedef struct _lcc_lexer_t
 {
@@ -346,6 +360,12 @@ typedef struct _lcc_lexer_t
     long flags;
     lcc_lexer_state_t state;
     lcc_lexer_substate_t substate;
+    lcc_lexer_define_state_t defstate;
+
+    /* complex state buffers */
+    lcc_array_t eval_stack;
+    lcc_string_t *macro_name;
+    lcc_string_array_t macro_args;
 
     /* current file info */
     size_t col;

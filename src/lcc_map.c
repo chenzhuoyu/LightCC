@@ -141,7 +141,7 @@ char lcc_map_pop(lcc_map_t *self, lcc_string_t *key, void *data)
     return 1;
 }
 
-char lcc_map_get(lcc_map_t *self, lcc_string_t *key, void *data)
+char lcc_map_get(lcc_map_t *self, lcc_string_t *key, void **data)
 {
     /* lookup node in bucket */
     lcc_map_node_t *node = _lcc_find_node(self, key, NULL);
@@ -150,15 +150,15 @@ char lcc_map_get(lcc_map_t *self, lcc_string_t *key, void *data)
     if (!node)
         return 0;
 
-    /* copy the value as needed */
+    /* retain the value address as needed */
     if (data)
-        memcpy(data, node->value, self->value_size);
+        *data = node->value;
 
     /* but at least we found the node */
     return 1;
 }
 
-char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *old, const void *new)
+char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *new)
 {
     /* lookup node in bucket */
     long hash;
@@ -167,13 +167,13 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *old, const void *new)
     /* found in bucket */
     if (node)
     {
-        /* copy the old value as needed */
-        if (old)
-            memcpy(old, node->value, self->value_size);
-
-        /* otherwise, destroy it */
-        else if (self->dtor_fn)
+        /* destroy the old value */
+        if (self->dtor_fn)
             self->dtor_fn(self, node->value, self->dtor_data);
+
+        /* retain the value address as needed */
+        if (data)
+            *data = node->value;
 
         /* replace the value */
         memcpy(node->value, new, self->value_size);
@@ -182,8 +182,13 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *old, const void *new)
 
     /* rehash as needed */
     if (self->count > self->capacity * LCC_MAP_LOAD_FAC)
+    {
         if (!(_lcc_map_rehash(self)))
-            return 0;
+        {
+            fprintf(stderr, "*** FATAL: rehash failed\n");
+            abort();
+        }
+    }
 
     /* calculate node index */
     node = NULL;
@@ -218,9 +223,13 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *old, const void *new)
     node->value = malloc(self->value_size);
     memcpy(node->value, new, self->value_size);
 
+    /* retain the value address as needed */
+    if (data)
+        *data = node->value;
+
     /* update node counter */
     self->count++;
-    return 1;
+    return 0;
 }
 
 char lcc_map_pop_string(lcc_map_t *self, const char *key, void *data)
@@ -231,7 +240,7 @@ char lcc_map_pop_string(lcc_map_t *self, const char *key, void *data)
     return ret;
 }
 
-char lcc_map_get_string(lcc_map_t *self, const char *key, void *data)
+char lcc_map_get_string(lcc_map_t *self, const char *key, void **data)
 {
     lcc_string_t *k = lcc_string_from(key);
     char ret = lcc_map_get(self, k, data);
@@ -239,10 +248,10 @@ char lcc_map_get_string(lcc_map_t *self, const char *key, void *data)
     return ret;
 }
 
-char lcc_map_set_string(lcc_map_t *self, const char *key, void *old, const void *new)
+char lcc_map_set_string(lcc_map_t *self, const char *key, void **data, const void *new)
 {
     lcc_string_t *k = lcc_string_from(key);
-    char ret = lcc_map_set(self, k, old, new);
+    char ret = lcc_map_set(self, k, data, new);
     lcc_string_unref(k);
     return ret;
 }

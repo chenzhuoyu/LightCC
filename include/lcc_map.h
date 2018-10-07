@@ -33,11 +33,11 @@ void lcc_map_free(lcc_map_t *self);
 void lcc_map_init(lcc_map_t *self, size_t value_size, lcc_map_dtor_fn dtor, void *data);
 
 char lcc_map_pop(lcc_map_t *self, lcc_string_t *key, void *data);
-char lcc_map_get(lcc_map_t *self, lcc_string_t *key, void *data);
-char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *old, const void *new);
+char lcc_map_get(lcc_map_t *self, lcc_string_t *key, void **data);
+char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *new);
 
 char lcc_map_pop_string(lcc_map_t *self, const char *key, void *data);
-char lcc_map_get_string(lcc_map_t *self, const char *key, void *data);
-char lcc_map_set_string(lcc_map_t *self, const char *key, void *old, const void *new);
+char lcc_map_get_string(lcc_map_t *self, const char *key, void **data);
+char lcc_map_set_string(lcc_map_t *self, const char *key, void **data, const void *new);
 
 #endif /* LCC_MAP_H */

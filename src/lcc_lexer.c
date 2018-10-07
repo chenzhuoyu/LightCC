@@ -68,8 +68,7 @@ void lcc_token_free(lcc_token_t *self)
                 break;
         }
 
-        self->prev->next = self->next;
-        self->next->prev = self->prev;
+        lcc_token_detach(self);
         free(self);
     }
 }
@@ -89,12 +88,21 @@ void lcc_token_attach(lcc_token_t *self, lcc_token_t *tail)
     self->prev = tail;
 }
 
-lcc_token_t *lcc_token_from_eof(void)
+lcc_token_t *lcc_token_new(void)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_EOF;
+    return self;
+}
+
+lcc_token_t *lcc_token_detach(lcc_token_t *self)
+{
+    self->prev->next = self->next;
+    self->next->prev = self->prev;
+    self->prev = self;
+    self->next = self;
     return self;
 }
 
@@ -355,6 +363,7 @@ const char *lcc_token_op_name(lcc_operator_t value)
         case LCC_OP_POINT     : return ".";
         case LCC_OP_SEMICOLON : return ";";
         case LCC_OP_DEREF     : return "->";
+        case LCC_OP_ELLIPSIS  : return "...";
         case LCC_OP_STR       : return "#";
         case LCC_OP_CONCAT    : return "##";
     }
@@ -576,6 +585,14 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
+typedef struct __lcc_psym_t
+{
+    long flags;
+    lcc_token_t *body;
+    lcc_string_t *name;
+    lcc_string_array_t args;
+} _lcc_psym_t;
+
 typedef struct __lcc_directive_bits_t
 {
     long bits;
@@ -760,38 +777,24 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 break;
             }
 
-            /* in the middle of parsing chars or strings */
+            /* in the middle of parsing tokens */
             case LCC_LX_SUBSTATE_STRING:
             case LCC_LX_SUBSTATE_STRING_ESCAPE:
             case LCC_LX_SUBSTATE_INCLUDE_FILE:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
+            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
+            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN:
+            case LCC_LX_SUBSTATE_OPERATOR_ELLIPSIS:
             {
                 /* not a directive, it's an error */
                 if (!(self->flags & LCC_LXF_DIRECTIVE))
                 {
-                    _lcc_lexer_error(self, "Unexpected %s when parsing strings", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL");
+                    _lcc_lexer_error(self, "Unexpected %s", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL");
                     return;
                 }
 
                 /* commit as string, but give a warning */
                 _lcc_commit_string(self);
-                _lcc_lexer_warning(self, "Invalid preprocessor token");
-                break;
-            }
-
-            /* in the middle of parsing chars or strings */
-            case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
-            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
-            case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN:
-            {
-                /* not a directive, it's an error */
-                if (!(self->flags & LCC_LXF_DIRECTIVE))
-                {
-                    _lcc_lexer_error(self, "Unexpected %s when parsing numbers", (self->flags & LCC_LXF_EOF) ? "EOF" : "EOL");
-                    return;
-                }
-
-                /* commit as number, but give a warning */
-                _lcc_commit_number(self);
                 _lcc_lexer_warning(self, "Invalid preprocessor token");
                 break;
             }
@@ -1281,6 +1284,14 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* decimal number or a simple point */
         case LCC_LX_SUBSTATE_NUMBER_OR_OP:
         {
+            /* maybe ellipsis operator */
+            if (self->ch == '.')
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_OPERATOR_ELLIPSIS;
+                break;
+            }
+
             /* not a valid digit, accept as a "." operator */
             if (!(isdigit(self->ch)))
             {
@@ -1614,23 +1625,6 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             break;
         }
 
-        /* macro operators */
-        case LCC_LX_SUBSTATE_OPERATOR_HASH:
-        {
-            if (self->ch == '#')
-            {
-                self->state = LCC_LX_STATE_ACCEPT;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_CONCAT));
-            }
-            else
-            {
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STR));
-            }
-
-            break;
-        }
-
         /* block comment, line comment or "/", "/=" */
         case LCC_LX_SUBSTATE_OPERATOR_SLASH:
         {
@@ -1672,6 +1666,43 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             break;
         }
 
+        /* macro operators */
+        case LCC_LX_SUBSTATE_OPERATOR_HASH:
+        {
+            if (self->ch == '#')
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_CONCAT));
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STR));
+            }
+
+            break;
+        }
+
+        /* ellipsis operator */
+        case LCC_LX_SUBSTATE_OPERATOR_ELLIPSIS:
+        {
+            /* the third character must be "." */
+            if (self->ch == '.')
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ELLIPSIS));
+                break;
+            }
+
+            /* otherwise it's an error */
+            if (isprint(self->ch))
+                _lcc_lexer_error(self, "Invalid character '%c'", self->ch);
+            else
+                _lcc_lexer_error(self, "Invalid character '\\x%02x'", (uint8_t)(self->ch));
+
+            return;
+        }
+
         /* line comment, ignore every character on this line from now on */
         case LCC_LX_SUBSTATE_COMMENT_LINE:
         {
@@ -1698,122 +1729,55 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
     }
 }
 
-static void _lcc_handle_directive(lcc_lexer_t *self)
-{
-    switch (self->flags & LCC_LXDN_MASK)
-    {
-        /* update directive name if it's the first token */
-        case 0:
-        {
-            /* maybe a null directive */
-            if (self->tokens.prev == &(self->tokens))
-            {
-                self->flags |= LCC_LXDN_NULL;
-                break;
-            }
-
-            /* otherwise should be a directive name */
-            if (self->tokens.prev->type != LCC_TK_IDENT)
-            {
-                _lcc_lexer_error(self, "Directive name expected");
-                return;
-            }
-
-            /* get the directive name token */
-            lcc_string_t *name = self->tokens.prev->ident;
-            const _lcc_directive_bits_t *pb;
-
-            /* find directive by name */
-            for (pb = DIRECTIVES; pb->name; pb++)
-                if (!(strcmp(pb->name, name->buf)))
-                    break;
-
-            /* no such directive */
-            if (!(pb->name))
-            {
-                _lcc_lexer_error(self, "Unknown compiler directive \"%s\"", name->buf);
-                return;
-            }
-
-            /* set the name bit, and remove the token */
-            self->flags |= pb->bits;
-            lcc_token_free(self->tokens.prev);
-            break;
-        }
-
-        /* Special Case :: "#define" directive
-         * set a special flag after macro name parsed successfully
-         * required for identifying object-style or function-style macro */
-        case LCC_LXDN_DEFINE:
-        {
-            self->flags |= LCC_LXDF_DEFINE_NS;
-            break;
-        }
-
-        /* these directives are not handled here */
-        case LCC_LXDN_NULL:
-        case LCC_LXDN_INCLUDE:
-        case LCC_LXDN_UNDEF:
-        case LCC_LXDN_IF:
-        case LCC_LXDN_IFDEF:
-        case LCC_LXDN_IFNDEF:
-        case LCC_LXDN_ELIF:
-        case LCC_LXDN_ELSE:
-        case LCC_LXDN_ENDIF:
-        case LCC_LXDN_PRAGMA:
-        case LCC_LXDN_ERROR:
-        case LCC_LXDN_WARNING:
-        case LCC_LXDN_LINE:
-        case LCC_LXDN_SCCS:
-            break;
-
-        /* unknown bit-mask, should not happen */
-        default:
-        {
-            fprintf(stderr, "*** FATAL: unknown directive flags %.16lx\n", self->flags);
-            abort();
-        }
-    }
-}
-
-#define _LCC_SHIFT_TOKEN(self, efmt, ...)               \
-({                                                      \
-    /* should have at least 1 argument */               \
-    if (self->tokens.next == &(self->tokens))           \
-    {                                                   \
-        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);   \
-        return;                                         \
-    }                                                   \
-                                                        \
-    /* extract the token */                             \
-    self->tokens.next;                                  \
+#define _LCC_FETCH_TOKEN(self, efmt, ...)                   \
+({                                                          \
+    /* should have at least 1 argument */                   \
+    if (self->tokens.next == &(self->tokens))               \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
+                                                            \
+    /* extract the token */                                 \
+    self->tokens.next;                                      \
 })
 
-#define _LCC_ENSURE_IDENT(self, token, efmt, ...)       \
-({                                                      \
-    /* must be an identifier */                         \
-    if (token->type != LCC_TK_IDENT)                    \
-    {                                                   \
-        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);   \
-        return;                                         \
-    }                                                   \
-                                                        \
-    /* extract the token */                             \
-    token->ident;                                       \
+#define _LCC_ENSURE_IDENT(self, token, efmt, ...)           \
+({                                                          \
+    /* must be an identifier */                             \
+    if (token->type != LCC_TK_IDENT)                        \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
+                                                            \
+    /* extract the token */                                 \
+    token->ident;                                           \
 })
 
-#define _LCC_ENSURE_STRING(self, token, efmt, ...)      \
-({                                                      \
-    /* must be a string literal */                      \
-    if ((token->type != LCC_TK_LITERAL) ||              \
-        (token->literal.type != LCC_LT_STRING))         \
-    {                                                   \
-        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);   \
-        return;                                         \
-    }                                                   \
-                                                        \
-    /* extract the token */                             \
-    token->literal.v_string;                            \
+#define _LCC_ENSURE_STRING(self, token, efmt, ...)          \
+({                                                          \
+    /* must be a string literal */                          \
+    if ((token->type != LCC_TK_LITERAL) ||                  \
+        (token->literal.type != LCC_LT_STRING))             \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
+                                                            \
+    /* extract the token */                                 \
+    token->literal.v_string;                                \
+})
+
+#define _LCC_ENSURE_OPERATOR(self, token, op, efmt, ...)    \
+({                                                          \
+    /* must be an operator */                               \
+    if ((token->type != LCC_TK_OPERATOR) ||                 \
+        (token->operator != op))                            \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
 })
 
 static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path)
@@ -1857,17 +1821,6 @@ static inline lcc_string_t *_lcc_path_concat(lcc_string_t *base, lcc_string_t *n
     return ret;
 }
 
-static inline lcc_string_t *_lcc_path_dirname(lcc_string_t *name)
-{
-    /* get it's directory name */
-    char *buf = strndup(name->buf, name->len);
-    lcc_string_t *ret = lcc_string_from(dirname(buf));
-
-    /* free the string buffer */
-    free(buf);
-    return ret;
-}
-
 static inline lcc_string_t *_lcc_make_message(lcc_lexer_t *self)
 {
     /* no tokens */
@@ -1906,6 +1859,359 @@ static inline lcc_string_t *_lcc_make_message(lcc_lexer_t *self)
     return s;
 }
 
+static inline lcc_string_t *_lcc_path_dirname(lcc_string_t *name)
+{
+    /* get it's directory name */
+    char *buf = strndup(name->buf, name->len);
+    lcc_string_t *ret = lcc_string_from(dirname(buf));
+
+    /* free the string buffer */
+    free(buf);
+    return ret;
+}
+
+static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
+{
+    /* for "#include_next" support */
+    char load = 1;
+    char next = 0;
+    char found = 0;
+    dev_t fdev = 0;
+    ino_t fino = 0;
+
+    /* check for "#include_next" */
+    if (self->flags & LCC_LXDF_INCLUDE_NEXT)
+    {
+        /* calculate include path from current file */
+        struct stat st = {};
+        lcc_string_t *dir = _lcc_path_dirname(self->file->name);
+
+        /* try to read it's info */
+        if (stat(dir->buf, &st))
+        {
+            _lcc_lexer_error(self, "Cannot read directory \"%s\": [%d] %s", dir->buf, errno, strerror(errno));
+            lcc_string_unref(dir);
+            return 0;
+        }
+
+        /* don't load immediately if it's a system include file */
+        if (self->flags & LCC_LXDF_INCLUDE_SYS)
+            load = 0;
+
+        /* mark as "include_next" */
+        next = 1;
+        fdev = st.st_dev;
+        fino = st.st_ino;
+        lcc_string_unref(dir);
+    }
+
+    /* search for user directory if needed */
+    if (!next && !(self->flags & LCC_LXDF_INCLUDE_SYS))
+    {
+        /* calculate include path from current file */
+        char loaded = 0;
+        lcc_string_t *dir = _lcc_path_dirname(self->file->name);
+        lcc_string_t *path = _lcc_path_concat(dir, fname);
+
+        /* push to file stack if exists */
+        if (_lcc_file_exists(path))
+        {
+            found = 1;
+            loaded = _lcc_push_file(self, path);
+        }
+
+        /* release the strings */
+        lcc_string_unref(dir);
+        lcc_string_unref(path);
+
+        /* found, but not loaded, it's an error */
+        if (found && !loaded)
+        {
+            _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
+            return 0;
+        }
+    }
+
+    /* search in system include directories */
+    for (size_t i = 0; !found && (i < self->include_paths.array.count); i++)
+    {
+        char loaded = 0;
+        char doload = load;
+        struct stat st = {};
+
+        /* make the full path */
+        lcc_string_t *dir = lcc_string_array_get(&(self->include_paths), i);
+        lcc_string_t *path = _lcc_path_concat(dir, fname);
+
+        /* it's "include_next" */
+        if (next)
+        {
+            /* try to read it's info */
+            if (stat(dir->buf, &st))
+            {
+                lcc_string_unref(path);
+                continue;
+            }
+
+            /* check for the same file */
+            if ((st.st_dev == fdev) &&
+                (st.st_ino == fino))
+            {
+                load = 0;
+                doload = 1;
+            }
+        }
+
+        /* check for load flag */
+        if (load)
+        {
+            /* push to file stack if exists */
+            if (_lcc_file_exists(path))
+            {
+                found = 1;
+                loaded = _lcc_push_file(self, path);
+            }
+        }
+
+        /* update load flag after loading this file */
+        load = doload;
+        lcc_string_unref(path);
+
+        /* found, but not loaded, it's an error */
+        if (found && !loaded)
+        {
+            _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
+            return 0;
+        }
+    }
+
+    /* found, and loaded successfully */
+    if (found)
+        return 1;
+
+    /* still not found, it's an error */
+    _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, ENOENT, strerror(ENOENT));
+    return 0;
+}
+
+static void _lcc_handle_define(lcc_lexer_t *self)
+{
+    /* directive name not yet set */
+    if (!(self->flags & LCC_LXDF_DEFINE_NS))
+    {
+        /* must be an identifier */
+        if (self->tokens.next->type != LCC_TK_IDENT)
+        {
+            _lcc_lexer_error(self, "Macro name must be an identifier");
+            return;
+        }
+
+        /* which must not be "defined" (which is
+         * the only reserved word for preprocessor) */
+        if (!(strcmp(self->tokens.next->ident->buf, "defined")))
+        {
+            _lcc_lexer_error(self, "Cannot redefine \"defined\"");
+            return;
+        }
+
+        /* set a special flag after macro name parsed successfully
+         * required for identifying object-style or function-style macro */
+        self->flags |= LCC_LXDF_DEFINE_NS;
+        self->defstate = LCC_LX_DEFSTATE_INIT;
+        self->macro_name = lcc_string_ref(self->tokens.next->ident);
+
+        /* remove the identifier from tokens */
+        lcc_token_free(self->tokens.next);
+        lcc_string_array_init(&(self->macro_args));
+        return;
+    }
+
+    /* only respond to function-style macros that are not checked */
+    if ((self->flags & LCC_LXDF_DEFINE_O) ||
+        (self->flags & LCC_LXDF_DEFINE_FINE))
+        return;
+
+    /* transfer the state machine */
+    switch (self->defstate)
+    {
+        /* initial state */
+        case LCC_LX_DEFSTATE_INIT:
+        {
+            _LCC_ENSURE_OPERATOR(self, self->tokens.next, LCC_OP_LBRACKET, "'(' expected");
+            self->defstate = LCC_LX_DEFSTATE_PUSH_ARG;
+            lcc_token_free(self->tokens.next);
+            break;
+        }
+
+        /* push argument */
+        case LCC_LX_DEFSTATE_PUSH_ARG:
+        {
+            /* may be identifier or "..." variadic specifier */
+            switch (self->tokens.next->type)
+            {
+                /* named argument */
+                case LCC_TK_IDENT:
+                {
+                    self->defstate = LCC_LX_DEFSTATE_DELIM_OR_END;
+                    lcc_string_array_append(&(self->macro_args), lcc_string_ref(self->tokens.next->ident));
+                    break;
+                }
+
+                /* maybe variadic specifier */
+                case LCC_TK_OPERATOR:
+                {
+                    /* can only be ellipsis */
+                    if (self->tokens.next->operator != LCC_OP_ELLIPSIS)
+                    {
+                        _lcc_lexer_error(self, "Identifier or '...' expected");
+                        return;
+                    }
+
+                    /* cannot have more arguments */
+                    self->flags |= LCC_LXDF_DEFINE_VAR;
+                    self->defstate = LCC_LX_DEFSTATE_END;
+                    break;
+                }
+
+                /* otherwise it's an error */
+                default:
+                {
+                    _lcc_lexer_error(self, "Identifier or '...' expected");
+                    return;
+                }
+            }
+
+            /* release the token */
+            lcc_token_free(self->tokens.next);
+            break;
+        }
+
+        /* delimiter or end of argument */
+        case LCC_LX_DEFSTATE_DELIM_OR_END:
+        {
+            /* either way, it must be an operator */
+            if (self->tokens.next->type != LCC_TK_OPERATOR)
+            {
+                _lcc_lexer_error(self, "',' or ')' expected");
+                return;
+            }
+
+            /* check for the operators */
+            switch (self->tokens.next->operator)
+            {
+                /* more arguments */
+                case LCC_OP_COMMA:
+                {
+                    self->defstate = LCC_LX_DEFSTATE_PUSH_ARG;
+                    break;
+                }
+
+                /* end of arguments */
+                case LCC_OP_RBRACKET:
+                {
+                    self->flags |= LCC_LXDF_DEFINE_FINE;
+                    break;
+                }
+
+                /* otherwise it's an error */
+                default:
+                {
+                    _lcc_lexer_error(self, "',' or ')' expected");
+                    return;
+                }
+            }
+
+            /* release the token */
+            lcc_token_free(self->tokens.next);
+            break;
+        }
+
+        /* dead end */
+        case LCC_LX_DEFSTATE_END:
+        {
+            _LCC_ENSURE_OPERATOR(self, self->tokens.next, LCC_OP_RBRACKET, "')' expected");
+            self->flags |= LCC_LXDF_DEFINE_FINE;
+            lcc_token_free(self->tokens.next);
+            break;
+        }
+    }
+}
+
+static void _lcc_handle_directive(lcc_lexer_t *self)
+{
+    switch (self->flags & LCC_LXDN_MASK)
+    {
+        /* update directive name if it's the first token */
+        case 0:
+        {
+            /* maybe a null directive */
+            if (self->tokens.prev == &(self->tokens))
+            {
+                self->flags |= LCC_LXDN_NULL;
+                break;
+            }
+
+            /* get the directive name token */
+            lcc_string_t *name = _LCC_ENSURE_IDENT(self, self->tokens.next, "Directive name expected");
+            const _lcc_directive_bits_t *pb;
+
+            /* find directive by name */
+            for (pb = DIRECTIVES; pb->name; pb++)
+                if (!(strcmp(pb->name, name->buf)))
+                    break;
+
+            /* no such directive */
+            if (!(pb->name))
+            {
+                _lcc_lexer_error(self, "Unknown compiler directive \"%s\"", name->buf);
+                return;
+            }
+
+            /* set the name bit, and remove the token */
+            self->flags |= pb->bits;
+            lcc_token_free(self->tokens.prev);
+            break;
+        }
+
+        /* these directives are not handled here */
+        case LCC_LXDN_NULL:
+        case LCC_LXDN_INCLUDE:
+        case LCC_LXDN_UNDEF:
+        case LCC_LXDN_IFDEF:
+        case LCC_LXDN_IFNDEF:
+        case LCC_LXDN_ELSE:
+        case LCC_LXDN_ENDIF:
+        case LCC_LXDN_PRAGMA:
+        case LCC_LXDN_ERROR:
+        case LCC_LXDN_WARNING:
+        case LCC_LXDN_LINE:
+        case LCC_LXDN_SCCS:
+            break;
+
+        /* "#define" directive */
+        case LCC_LXDN_DEFINE:
+        {
+            _lcc_handle_define(self);
+            break;
+        }
+
+        /* "#if" and "#elif" directive */
+        case LCC_LXDN_IF:
+        case LCC_LXDN_ELIF:
+        {
+            // TODO: evaluate `if` condition
+            break;
+        }
+
+        /* unknown bit-mask, should not happen */
+        default:
+        {
+            fprintf(stderr, "*** FATAL: unknown directive flags %.16lx\n", self->flags);
+            abort();
+        }
+    }
+}
+
 static void _lcc_commit_directive(lcc_lexer_t *self)
 {
     /* check directive type */
@@ -1919,160 +2225,64 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_INCLUDE:
         {
             /* extract the file name */
-            char found = 0;
-            lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing include file name");
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing include file name");
             lcc_string_t *fname = _LCC_ENSURE_STRING(self, token, "Include file name must be a string");
 
-            /* for "#include_next" support */
-            char next = 0;
-            char load = 1;
-            dev_t fdev = 0;
-            ino_t fino = 0;
-
-            /* check for "#include_next" */
-            if (self->flags & LCC_LXDF_INCLUDE_NEXT)
+            /* load the include file */
+            if (_lcc_load_include(self, fname))
             {
-                /* calculate include path from current file */
-                struct stat st = {};
-                lcc_string_t *dir = _lcc_path_dirname(self->file->name);
-
-                /* try to read it's info */
-                if (stat(dir->buf, &st))
-                {
-                    _lcc_lexer_error(self, "Cannot read directory \"%s\": [%d] %s", dir->buf, errno, strerror(errno));
-                    lcc_string_unref(dir);
-                    lcc_token_free(token);
-                    return;
-                }
-
-                /* don't load immediately if it's a system include file */
-                if (self->flags & LCC_LXDF_INCLUDE_SYS)
-                    load = 0;
-
-                /* mark as "include_next" */
-                next = 1;
-                fdev = st.st_dev;
-                fino = st.st_ino;
-                lcc_string_unref(dir);
+                lcc_token_free(token);
+                break;
             }
-
-            /* search for user directory if needed */
-            if (!next && !(self->flags & LCC_LXDF_INCLUDE_SYS))
+            else
             {
-                /* calculate include path from current file */
-                char loaded = 0;
-                lcc_string_t *dir = _lcc_path_dirname(self->file->name);
-                lcc_string_t *path = _lcc_path_concat(dir, fname);
-
-                /* push to file stack if exists */
-                if (_lcc_file_exists(path))
-                {
-                    found = 1;
-                    loaded = _lcc_push_file(self, path);
-                }
-
-                /* release the strings */
-                lcc_string_unref(dir);
-                lcc_string_unref(path);
-
-                /* found, but not loaded, it's an error */
-                if (found && !loaded)
-                {
-                    _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
-                    lcc_token_free(token);
-                    return;
-                }
-            }
-
-            /* search in system include directories */
-            for (size_t i = 0; !found && (i < self->include_paths.array.count); i++)
-            {
-                char loaded = 0;
-                char doload = load;
-                struct stat st = {};
-
-                /* make the full path */
-                lcc_string_t *dir = lcc_string_array_get(&(self->include_paths), i);
-                lcc_string_t *path = _lcc_path_concat(dir, fname);
-
-                /* it's "include_next" */
-                if (next)
-                {
-                    /* try to read it's info */
-                    if (stat(dir->buf, &st))
-                    {
-                        lcc_string_unref(path);
-                        continue;
-                    }
-
-                    /* check for the same file */
-                    if ((st.st_dev == fdev) &&
-                        (st.st_ino == fino))
-                    {
-                        load = 0;
-                        doload = 1;
-                    }
-                }
-
-                /* check for load flag */
-                if (load)
-                {
-                    /* push to file stack if exists */
-                    if (_lcc_file_exists(path))
-                    {
-                        found = 1;
-                        loaded = _lcc_push_file(self, path);
-                    }
-                }
-
-                /* update load flag after loading this file */
-                load = doload;
-                lcc_string_unref(path);
-
-                /* found, but not loaded, it's an error */
-                if (found && !loaded)
-                {
-                    _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
-                    lcc_token_free(token);
-                    return;
-                }
-            }
-
-            /* still not found, it's an error */
-            if (!found)
-            {
-                _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, ENOENT, strerror(ENOENT));
                 lcc_token_free(token);
                 return;
             }
-
-            /* release the token */
-            lcc_token_free(token);
-            break;
         }
 
         /* "#define" directive */
         case LCC_LXDN_DEFINE:
         {
-            /* extract the file name */
-            lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing macro name");
-            lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
-
-            // TODO: handle define
-            if (self->flags & LCC_LXDF_DEFINE_F)
-                printf("DEFINE_FUNC: %s\n", macro->buf);
-            else
-                printf("DEFINE_OBJECT: %s\n", macro->buf);
-            while (token->next != &(self->tokens))
+            /* identifier must be set */
+            if (!(self->flags & LCC_LXDF_DEFINE_NS))
             {
-                lcc_string_t *s = lcc_token_to_string(token->next);
-                printf(">> %s\n", s->buf);
-                lcc_string_unref(s);
-                lcc_token_free(token->next);
+                _lcc_lexer_error(self, "Missing macro name");
+                return;
             }
 
-            /* release the token */
-            lcc_token_free(token);
+            /* create a new symbol */
+            _lcc_psym_t psym = {
+                .body = lcc_token_new(),
+                .name = self->macro_name,
+                .args = self->macro_args,
+                .flags = self->flags,
+            };
+
+            /* move everything remaining to macro body */
+            if (self->tokens.next != &(self->tokens))
+            {
+                psym.body->prev = self->tokens.prev;
+                psym.body->next = self->tokens.next;
+                self->tokens.prev->next = psym.body;
+                self->tokens.next->prev = psym.body;
+                self->tokens.prev = &(self->tokens);
+                self->tokens.next = &(self->tokens);
+            }
+
+            // FIXME: remove this afterwards
+            printf("DEFINE: %s\n", self->macro_name->buf);
+            for (lcc_token_t *p = psym.body->next; p != psym.body; p = p->next)
+            {
+                lcc_string_t *s = lcc_token_to_string(p);
+                printf(">> %s\n", s->buf);
+                lcc_string_unref(s);
+            }
+
+            /* add to predefined symbols */
+            if (lcc_map_set(&(self->psyms), self->macro_name, NULL, &psym))
+                _lcc_lexer_warning(self, "Symbol \"%s\" redefined", self->macro_name->buf);
+
             break;
         }
 
@@ -2080,7 +2290,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_UNDEF:
         {
             /* extract the file name */
-            lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing macro name");
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
             /* undefine the macro */
@@ -2111,7 +2321,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_IFDEF:
         {
             /* extract the file name */
-            lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing macro name");
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
             // TODO: handle ifdef
@@ -2126,7 +2336,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_IFNDEF:
         {
             /* extract the file name */
-            lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing macro name");
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
             // TODO: handle ifndef
@@ -2214,7 +2424,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_SCCS:
         {
             /* extract the SCCS message */
-            lcc_token_t *token = _LCC_SHIFT_TOKEN(self, "Missing SCCS message");
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing SCCS message");
             lcc_string_t *message = _LCC_ENSURE_STRING(self, token, "SCCS message must be a string");
 
             /* add to SCCS messages and release the token */
@@ -2247,9 +2457,10 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
     self->substate = LCC_LX_SUBSTATE_NULL;
 }
 
-#undef _LCC_SHIFT_TOKEN
+#undef _LCC_FETCH_TOKEN
 #undef _LCC_ENSURE_IDENT
 #undef _LCC_ENSURE_STRING
+#undef _LCC_ENSURE_OPERATOR
 
 static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 {
@@ -2264,16 +2475,18 @@ static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 
 static void _lcc_psym_dtor(struct _lcc_map_t *self, void *value, void *data)
 {
-    /* get the token pointer */
-    lcc_token_t *p = value;
-    lcc_token_t *q = p->next;
+    /* get the symbol */
+    _lcc_psym_t *sym = value;
+    lcc_token_t *head = sym->body;
 
-    /* release all tokens */
-    while (p != q)
-    {
-        lcc_token_free(q);
-        q = p->next;
-    }
+    /* destroy all tokens */
+    while (head->next != head)
+        lcc_token_free(head->next);
+
+    /* clear macro name and arguments */
+    free(sym->body);
+    lcc_string_unref(sym->name);
+    lcc_string_array_free(&(sym->args));
 }
 
 void lcc_lexer_free(lcc_lexer_t *self)
@@ -2309,12 +2522,12 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
         .row = 0,
         .name = lcc_string_from("<define>"),
         .flags = 0,
+        .lines = LCC_STRING_ARRAY_STATIC_INIT,
     };
 
     /* initial source file */
-    lcc_map_init(&(self->psyms), sizeof(lcc_token_t), _lcc_psym_dtor, NULL);
+    lcc_map_init(&(self->psyms), sizeof(_lcc_psym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
-    lcc_string_array_init(&(psrc.lines));
 
     /* token list and token buffer */
     lcc_token_init(&(self->tokens));
@@ -2349,28 +2562,28 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     self->error_data = NULL;
 
     /* version symbols */
-    lcc_lexer_add_define(self, "__LCC__", "1");
-    lcc_lexer_add_define(self, "__GNUC__", "4");
-
-    /* standard defines */
-    lcc_lexer_add_define(self, "__STDC__", "1");
-    lcc_lexer_add_define(self, "__STDC_HOSTED__", "1");
-    lcc_lexer_add_define(self, "__STDC_VERSION__", "199901L");
-
-    /* platform specific symbols */
-    lcc_lexer_add_define(self, "unix", "1");
-    lcc_lexer_add_define(self, "__unix", "1");
-    lcc_lexer_add_define(self, "__unix__", "1");
-    lcc_lexer_add_define(self, "__x86_64__", "1");
-
-    /* data model */
-    lcc_lexer_add_define(self, "__LP64__", "1");
-    lcc_lexer_add_define(self, "__SIZE_TYPE__", "unsigned long");
-    lcc_lexer_add_define(self, "__PTRDIFF_TYPE__", "long");
-
-    /* other built-in types */
-    lcc_lexer_add_define(self, "__WINT_TYPE__", "unsigned int");
-    lcc_lexer_add_define(self, "__WCHAR_TYPE__", "int");
+//    lcc_lexer_add_define(self, "__LCC__", "1");
+//    lcc_lexer_add_define(self, "__GNUC__", "4");
+//
+//    /* standard defines */
+//    lcc_lexer_add_define(self, "__STDC__", "1");
+//    lcc_lexer_add_define(self, "__STDC_HOSTED__", "1");
+//    lcc_lexer_add_define(self, "__STDC_VERSION__", "199901L");
+//
+//    /* platform specific symbols */
+//    lcc_lexer_add_define(self, "unix", "1");
+//    lcc_lexer_add_define(self, "__unix", "1");
+//    lcc_lexer_add_define(self, "__unix__", "1");
+//    lcc_lexer_add_define(self, "__x86_64__", "1");
+//
+//    /* data model */
+//    lcc_lexer_add_define(self, "__LP64__", "1");
+//    lcc_lexer_add_define(self, "__SIZE_TYPE__", "unsigned long");
+//    lcc_lexer_add_define(self, "__PTRDIFF_TYPE__", "long");
+//
+//    /* other built-in types */
+//    lcc_lexer_add_define(self, "__WINT_TYPE__", "unsigned int");
+//    lcc_lexer_add_define(self, "__WCHAR_TYPE__", "int");
     return 1;
 }
 
@@ -2490,6 +2703,7 @@ char lcc_lexer_advance(lcc_lexer_t *self)
 
                 /* get the new stack top */
                 self->file = lcc_array_top(&(self->files));
+                self->file->flags &= ~LCC_FF_LNODIR;
                 break;
             }
 
@@ -2554,9 +2768,8 @@ char lcc_lexer_advance(lcc_lexer_t *self)
             /* commit parsed compiler directive */
             case LCC_LX_STATE_COMMIT:
             {
-                /* first token, proceed to handle the token first */
-                if (!(self->flags & LCC_LXDN_MASK))
-                    _lcc_handle_directive(self);
+                /* handle the token first */
+                _lcc_handle_directive(self);
 
                 /* not rejected */
                 if (self->state != LCC_LX_STATE_REJECT)
@@ -2616,7 +2829,7 @@ char lcc_lexer_advance(lcc_lexer_t *self)
             /* end of lexing, emit an EOF token */
             case LCC_LX_STATE_END:
             {
-                lcc_token_attach(&(self->tokens), lcc_token_from_eof());
+                lcc_token_attach(&(self->tokens), lcc_token_new());
                 return 1;
             }
         }
