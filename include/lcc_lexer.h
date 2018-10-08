@@ -251,6 +251,11 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_NAME,
     LCC_LX_SUBSTATE_STRING,
     LCC_LX_SUBSTATE_STRING_ESCAPE,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_HEX,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_D,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_E,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2,
+    LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3,
     LCC_LX_SUBSTATE_NUMBER,
     LCC_LX_SUBSTATE_NUMBER_ZERO,
     LCC_LX_SUBSTATE_NUMBER_OR_OP,
@@ -328,7 +333,7 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXDN_SCCS           0x0000000000400000      /* #sccs directive */
 #define LCC_LXDN_MASK           0x0000000000ffff00      /* compiler directive name mask */
 
-#define LCC_LXDF_DEFINE_O       0x0000000001000000      /* object-style macro */
+#define LCC_LXDF_DEFINE_O       0x0000000001000000      /* object-style macro (weak flag) */
 #define LCC_LXDF_DEFINE_F       0x0000000002000000      /* function-style macro */
 #define LCC_LXDF_DEFINE_NS      0x0000000004000000      /* macro name already set */
 #define LCC_LXDF_DEFINE_VAR     0x0000000008000000      /* variadic function-like macro */
@@ -392,6 +397,9 @@ typedef enum _lcc_lexer_gnu_ext_t
 void lcc_lexer_free(lcc_lexer_t *self);
 char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file);
 char lcc_lexer_advance(lcc_lexer_t *self);
+
+lcc_token_t *lcc_lexer_next(lcc_lexer_t *self);
+lcc_token_t *lcc_lexer_shift(lcc_lexer_t *self);
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value);
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);

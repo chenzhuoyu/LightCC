@@ -425,7 +425,7 @@ lcc_string_t *lcc_token_to_string(lcc_token_t *self)
                 case LCC_LT_LONGDOUBLE : return lcc_string_from_format("{LONGDOUBLE:%LfL}"  , self->literal.v_longdouble);
                 case LCC_LT_CHAR       : return lcc_string_from_format("{CHARS:'%s'}"       , self->literal.v_char->buf);
                 case LCC_LT_STRING     : return lcc_string_from_format("{STRING:\"%s\"}"    , self->literal.v_string->buf);
-                case LCC_LT_NUMBER     : return lcc_string_from_format("{NUMBER:\"%s\"}"    , self->literal.v_number->buf);
+                case LCC_LT_NUMBER     : return lcc_string_from_format("{NUMBER:%s}"        , self->literal.v_number->buf);
             }
         }
     }
@@ -709,6 +709,14 @@ static char _lcc_error_default(
     return type != LCC_LXET_ERROR;
 }
 
+#define _LCC_WRONG_CHAR(msg)                                            \
+{                                                                       \
+    if (isprint(self->ch))                                              \
+        _lcc_lexer_error(self, msg " '%c'", self->ch);                  \
+    else                                                                \
+        _lcc_lexer_error(self, msg " '\\x%02x'", (uint8_t)(self->ch));  \
+}
+
 static inline lcc_string_t *_lcc_dump_token(lcc_lexer_t *self)
 {
     char *p = self->token_buffer.buf;
@@ -780,6 +788,11 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing tokens */
             case LCC_LX_SUBSTATE_STRING:
             case LCC_LX_SUBSTATE_STRING_ESCAPE:
+            case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX:
+            case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_D:
+            case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_E:
+            case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2:
+            case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3:
             case LCC_LX_SUBSTATE_INCLUDE_FILE:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
@@ -994,11 +1007,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     }
 
                     /* other unknown characters */
-                    if (isprint(self->ch))
-                        _lcc_lexer_error(self, "Invalid character '%c'", self->ch);
-                    else
-                        _lcc_lexer_error(self, "Invalid character '\\x%02x'", (uint8_t)(self->ch));
-
+                    _LCC_WRONG_CHAR("Invalid character")
                     return;
                 }
             }
@@ -1054,6 +1063,13 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     if (!(self->flags & LCC_LXF_CHAR_SEQ))
                         goto _lcc_label_string_generic_char;
 
+                    /* chars cannot be empty */
+                    if (!(self->token_buffer.len))
+                    {
+                        _lcc_lexer_error(self, "Empty character constant");
+                        return;
+                    }
+
                     /* accept as chars */
                     _lcc_commit_chars(self);
                     self->state = LCC_LX_STATE_ACCEPT;
@@ -1085,9 +1101,151 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* escape characters */
         case LCC_LX_SUBSTATE_STRING_ESCAPE:
         {
+            switch (self->ch)
+            {
+                /* normal escape characters */
+                case 'a':
+                case 'b':
+                case 'e':
+                case 'f':
+                case 'n':
+                case 'r':
+                case 't':
+                case 'v':
+                case '?':
+                case '"':
+                case '\'':
+                case '\\':
+                {
+                    /* "\e" escape character (should have GNU extension enabled) */
+                    if ((self->ch == 'e') && !(self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR))
+                        goto _lcc_string_escape_unknown;
+
+                    /* end of escape sequence */
+                    self->substate = LCC_LX_SUBSTATE_STRING;
+                    break;
+                }
+
+                /* hexadecimal escape characters */
+                case 'x':
+                case 'X':
+                {
+                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_HEX;
+                    break;
+                }
+
+                /* octal escape characters */
+                case '0' ... '3':
+                {
+                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2;
+                    break;
+                }
+
+                /* octal escape characters (two digits only) */
+                case '4' ... '7':
+                {
+                    self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3;
+                    break;
+                }
+
+                /* other unknown characters */
+                default:
+                _lcc_string_escape_unknown:
+                {
+                    self->substate = LCC_LX_SUBSTATE_STRING;
+                    _LCC_WRONG_CHAR("Unknown escape character")
+                    break;
+                }
+            }
+
+            /* append to token buffer */
             self->state = LCC_LX_STATE_SHIFT;
-            self->substate = LCC_LX_SUBSTATE_STRING;
             lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            break;
+        }
+
+        /* hexadecimal escape characters (first and second digit) */
+        case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX:
+        case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_D:
+        {
+            switch (self->ch)
+            {
+                /* hexadecimal digits */
+                case '0' ... '9':
+                case 'a' ... 'f':
+                case 'A' ... 'F':
+                {
+                    /* move to next substate */
+                    if (self->substate == LCC_LX_SUBSTATE_STRING_ESCAPE_HEX)
+                        self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_D;
+                    else
+                        self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_E;
+
+                    /* shift more characters */
+                    self->state = LCC_LX_STATE_SHIFT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* other unknown characters */
+                default:
+                {
+                    _LCC_WRONG_CHAR("Invalid hexadecimal digit")
+                    return;
+                }
+            }
+
+            break;
+        }
+
+        /* hexadecimal escape characters (end of digits) */
+        case LCC_LX_SUBSTATE_STRING_ESCAPE_HEX_E:
+        {
+            switch (self->ch)
+            {
+                /* hexadecimal digits */
+                case '0' ... '9':
+                case 'a' ... 'f':
+                case 'A' ... 'F':
+                {
+                    _lcc_lexer_error(self, "Hex escape sequence out of range");
+                    break;
+                }
+
+                /* other unknown characters */
+                default:
+                {
+                    self->state = LCC_LX_STATE_GOT_CHAR;
+                    self->substate = LCC_LX_SUBSTATE_STRING;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* octal escape characters (second and third digit) */
+        case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2:
+        case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3:
+        {
+            if ((self->ch < '0') || (self->ch > '7'))
+            {
+                self->state = LCC_LX_STATE_GOT_CHAR;
+                self->substate = LCC_LX_SUBSTATE_STRING;
+            }
+            else if (self->substate == LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3)
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_STRING;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            }
+
             break;
         }
 
@@ -1319,21 +1477,19 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 self->state = LCC_LX_STATE_SHIFT;
                 self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D;
                 lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                break;
             }
             else if (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D)
             {
                 _lcc_commit_number(self);
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                break;
             }
             else
             {
-                if (isprint(self->ch))
-                    _lcc_lexer_error(self, "Invalid hexadecimal digit '%c'", self->ch);
-                else
-                    _lcc_lexer_error(self, "Invalid hexadecimal digit '\\x%02x'", (uint8_t)self->ch);
+                _LCC_WRONG_CHAR("Invalid hexadecimal digit")
+                return;
             }
-
-            break;
         }
 
         /* octal integers */
@@ -1687,20 +1843,16 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         case LCC_LX_SUBSTATE_OPERATOR_ELLIPSIS:
         {
             /* the third character must be "." */
-            if (self->ch == '.')
+            if (self->ch != '.')
             {
-                self->state = LCC_LX_STATE_ACCEPT;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ELLIPSIS));
-                break;
+                _LCC_WRONG_CHAR("Invalid character")
+                return;
             }
 
-            /* otherwise it's an error */
-            if (isprint(self->ch))
-                _lcc_lexer_error(self, "Invalid character '%c'", self->ch);
-            else
-                _lcc_lexer_error(self, "Invalid character '\\x%02x'", (uint8_t)(self->ch));
-
-            return;
+            /* accept as ellipsis operator */
+            self->state = LCC_LX_STATE_ACCEPT;
+            lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ELLIPSIS));
+            break;
         }
 
         /* line comment, ignore every character on this line from now on */
@@ -1728,6 +1880,8 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         }
     }
 }
+
+#undef _LCC_WRONG_CHAR
 
 #define _LCC_FETCH_TOKEN(self, efmt, ...)                   \
 ({                                                          \
@@ -1796,10 +1950,123 @@ static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path)
     return 1;
 }
 
+static inline int _lcc_hex_value(char hex)
+{
+    if ((hex >= '0') && (hex <= '9'))
+        return hex - '0';
+    else if ((hex >= 'a') && (hex <= 'f'))
+        return hex - 'a' + 10;
+    else
+        return hex - 'A' + 10;
+}
+
 static inline char _lcc_file_exists(lcc_string_t *path)
 {
     struct stat st;
     return stat(path->buf, &st) == 0;
+}
+
+static inline void _lcc_string_translate(lcc_string_t *self, int gnuext)
+{
+    /* string boundary */
+    char *p = self->buf;
+    char *q = self->buf;
+    char *e = self->buf + self->len;
+
+    /* process the entire string */
+    while (p < e)
+    {
+        /* non-escape characters, copy as is */
+        if (*p != '\\')
+        {
+            *q++ = *p++;
+            continue;
+        }
+
+        /* skip the '\\' character */
+        switch (*++p)
+        {
+            /* these characters should be copied as is */
+            case '?':
+            case '"':
+            case '\'':
+            case '\\':
+            {
+                *q++ = *p++;
+                break;
+            }
+
+            /* single-character escape sequence */
+            case 'a': { p++; *q++ = '\a'; break; }
+            case 'b': { p++; *q++ = '\b'; break; }
+            case 'f': { p++; *q++ = '\f'; break; }
+            case 'n': { p++; *q++ = '\n'; break; }
+            case 'r': { p++; *q++ = '\r'; break; }
+            case 't': { p++; *q++ = '\t'; break; }
+            case 'v': { p++; *q++ = '\v'; break; }
+
+            /* GNU extension escape character */
+            case 'e':
+            {
+                if (gnuext & LCC_LX_GNUX_ESCAPE_CHAR)
+                {
+                    p++;
+                    *q++ = '\033';
+                    break;
+                }
+                else
+                {
+                    *q++ = '\\';
+                    *q++ = *p++;
+                    break;
+                }
+            }
+
+            /* hexadecimal escape characters */
+            case 'x':
+            {
+                /* parse exact 2 digits */
+                int msb = _lcc_hex_value(*++p);
+                int lsb = _lcc_hex_value(*++p);
+
+                /* convert to character */
+                p++;
+                *q++ = (char)((msb << 4) | lsb);
+                break;
+            }
+
+            /* octal escape characters */
+            case '0' ... '7':
+            {
+                /* valid range of octal characters
+                 * in 8-bit ASCII is '\000' ~ '\377' */
+                int val = 0;
+                int count = ((*p <= '3') ? 1 : 0) + 2;
+
+                /* parse at most `count` digits */
+                for (int i = 0; (i < count) && (*p >= '0') && (*p <= '7'); i++)
+                {
+                    val <<= 3;
+                    val |= (*p++ - '0') & 0x07;
+                }
+
+                /* convert to character */
+                *q++ = (char)val;
+                break;
+            }
+
+            /* should not be possible */
+            default:
+            {
+                fprintf(stderr, "*** FATAL: unrecognized escape character '\\x%02x'\n", (uint8_t)(*p));
+                abort();
+            }
+        }
+    }
+
+    /* end the result string */
+    *q = 0;
+    self->len = q - p;
 }
 
 static inline lcc_string_t *_lcc_path_concat(lcc_string_t *base, lcc_string_t *name)
@@ -1838,6 +2105,7 @@ static inline lcc_string_t *_lcc_make_message(lcc_lexer_t *self)
 
         /* clear the token */
         lcc_token_free(t);
+        _lcc_string_translate(s, self->gnuext);
         return s;
     }
 
@@ -2271,7 +2539,12 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             }
 
             // FIXME: remove this afterwards
-            printf("DEFINE: %s (%.16lx)\n", self->macro_name->buf, psym.flags);
+            printf("DEFINE(%zu): %s (%.16lx)\n", psym.args.array.count, self->macro_name->buf, psym.flags);
+            if (psym.flags & LCC_LXDF_DEFINE_F)
+                for (size_t i = 0; i < psym.args.array.count; i++)
+                    printf("* %s\n", lcc_string_array_get(&(psym.args), i)->buf);
+            if (psym.flags & LCC_LXDF_DEFINE_VAR)
+                printf("...\n");
             for (lcc_token_t *p = psym.body->next; p != psym.body; p = p->next)
             {
                 lcc_string_t *s = lcc_token_to_string(p);
@@ -2428,6 +2701,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             lcc_string_t *message = _LCC_ENSURE_STRING(self, token, "SCCS message must be a string");
 
             /* add to SCCS messages and release the token */
+            _lcc_string_translate(message, self->gnuext);
             lcc_string_array_append(&(self->sccs_msgs), lcc_string_ref(message));
             lcc_token_free(token);
             break;
@@ -2795,33 +3069,17 @@ char lcc_lexer_advance(lcc_lexer_t *self)
                     break;
                 }
 
-                /* nothing to accept, equivalent to SHIFT */
+                /* nothing to accept, equivalent to SHIFT or GOT_CHAR */
                 if (self->tokens.next == &(self->tokens))
-                {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_NULL;
                     break;
-                }
-
-                // TODO: accept token
-                printf("** accept token\n");
-                for (lcc_token_t *t = self->tokens.next; t != &(self->tokens); t = t->next)
-                {
-                    lcc_string_t *ts = lcc_token_to_string(t);
-                    printf("%s\n", ts->buf);
-                    lcc_string_unref(ts);
-                }
-                printf("** accept token done\n");
-                while (self->tokens.next != &(self->tokens))
-                    lcc_token_free(self->tokens.next);
-
-                return 1;
+                else
+                    return 1;
             }
 
             /* token rejected */
             case LCC_LX_STATE_REJECT:
             {
-                self->state = LCC_LX_STATE_SHIFT;
+                self->state = LCC_LX_STATE_END;
                 self->substate = LCC_LX_SUBSTATE_NULL;
                 return 0;
             }
@@ -2834,6 +3092,83 @@ char lcc_lexer_advance(lcc_lexer_t *self)
             }
         }
     }
+}
+
+lcc_token_t *lcc_lexer_next(lcc_lexer_t *self)
+{
+    /* shift one token */
+    _lcc_psym_t *psym;
+    lcc_token_t *token = lcc_lexer_shift(self);
+
+    /* check for errors */
+    if (!token)
+        return NULL;
+
+    /* check for token type */
+    switch (token->type)
+    {
+        /* EOF, keywords and operators */
+        case LCC_TK_EOF:
+        case LCC_TK_KEYWORD:
+        case LCC_TK_OPERATOR:
+            return token;
+
+        /* identifiers, may need substitution */
+        case LCC_TK_IDENT:
+        {
+            /* find in predefined symbols */
+            if (!(lcc_map_get(&(self->psyms), token->ident, (void **)(&psym))))
+                return token;
+
+            return token;
+        }
+
+        /* literals, may need translation */
+        case LCC_TK_LITERAL:
+        {
+            switch (token->literal.type)
+            {
+                /* chars literal */
+                case LCC_LT_CHAR:
+                {
+                    _lcc_string_translate(token->literal.v_char, self->gnuext);
+                    break;
+                }
+
+                /* string literal */
+                case LCC_LT_STRING:
+                {
+                    _lcc_string_translate(token->literal.v_string, self->gnuext);
+                    break;
+                }
+
+                /* number literal */
+                case LCC_LT_NUMBER:
+                {
+                    // TODO: translate numbers
+                    break;
+                }
+
+                /* otherwise, no translation required */
+                default:
+                    return token;
+            }
+        }
+    }
+
+    /* should not be possible here */
+    abort();
+}
+
+lcc_token_t *lcc_lexer_shift(lcc_lexer_t *self)
+{
+    /* advance lexer if no tokens remaining */
+    if (self->tokens.next == &(self->tokens))
+        if (!(lcc_lexer_advance(self)))
+            return NULL;
+
+    /* shift one token from lexer */
+    return lcc_token_detach(self->tokens.next);
 }
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value)

@@ -5,7 +5,7 @@
 #include "lcc_map.h"
 
 #define LCC_MAP_INIT_CAP    67
-#define LCC_MAP_LOAD_FAC    0.75
+#define LCC_MAP_LOAD_FAC    3 / 4
 
 static inline long _lcc_djb_hash(lcc_string_t *key)
 {
@@ -25,7 +25,7 @@ static inline long _lcc_djb_hash(lcc_string_t *key)
 
 static inline char _lcc_is_prime(size_t value)
 {
-    for (size_t i = 2; i < value / 2; i++)
+    for (size_t i = 2; i <= value / 2; i++)
         if ((value % i) == 0)
             return 0;
 
@@ -34,9 +34,8 @@ static inline char _lcc_is_prime(size_t value)
 
 static inline size_t _lcc_next_prime(size_t value)
 {
-    size_t v = value;
-    while (!(_lcc_is_prime(++v)));
-    return v;
+    while (!(_lcc_is_prime(++value)));
+    return value;
 }
 
 static inline lcc_map_node_t *_lcc_find_node(lcc_map_t *self, lcc_string_t *key, long *hashp)
@@ -52,26 +51,27 @@ static inline lcc_map_node_t *_lcc_find_node(lcc_map_t *self, lcc_string_t *key,
     /* simple linear probing algorithm */
     for (size_t i = 0; i < self->capacity; i++)
     {
-        /* actual index */
-        size_t p = (i + index) % self->capacity;
-
         /* empty nodes, cannot be after this */
-        if (!(self->bucket[p].flags))
+        if (!(self->bucket[index].flags))
             break;
 
         /* skip deleted nodes */
-        if (self->bucket[p].flags & LCC_MAP_FLAGS_DEL)
+        if (self->bucket[index].flags & LCC_MAP_FLAGS_DEL)
             continue;
 
         /* absolute equals, definately found */
-        if (self->bucket[p].key == key)
-            return &(self->bucket[p]);
+        if (self->bucket[index].key == key)
+            return &(self->bucket[index]);
 
         /* check for hash, key length and key string */
-        if ((self->bucket[p].hash == hash) &&
-            (self->bucket[p].key->len == key->len) &&
-            (memcmp(self->bucket[p].key->buf, key->buf, key->len) == 0))
-            return &(self->bucket[p]);
+        if ((self->bucket[index].hash == hash) &&
+            (self->bucket[index].key->len == key->len) &&
+            (memcmp(self->bucket[index].key->buf, key->buf, key->len) == 0))
+            return &(self->bucket[index]);
+
+        /* move to next index */
+        index++;
+        index %= self->capacity;
     }
 
     /* not found */
@@ -80,8 +80,55 @@ static inline lcc_map_node_t *_lcc_find_node(lcc_map_t *self, lcc_string_t *key,
 
 static char _lcc_map_rehash(lcc_map_t *self)
 {
-    // TODO: rehash
-    return 0;
+    /* create a new bucket */
+    size_t capacity = _lcc_next_prime(self->capacity);
+    lcc_map_node_t *bucket = calloc(capacity, sizeof(lcc_map_node_t));
+
+    /* rehash all items */
+    for (size_t i = 0; i < self->capacity; i++)
+    {
+        /* only rehash those are in-use */
+        if (self->bucket[i].flags == LCC_MAP_FLAGS_USED)
+        {
+            /* calculate new index */
+            size_t index = self->bucket[i].hash % capacity;
+            lcc_map_node_t *slot = NULL;
+
+            /* probe for an available slot */
+            for (size_t j = 0; j < capacity; j++)
+            {
+                /* found an empty slot */
+                if (!(bucket[index].flags))
+                {
+                    slot = &(bucket[index]);
+                    break;
+                }
+
+                /* move to next index */
+                index++;
+                index %= capacity;
+            }
+
+            /* must exists */
+            if (!slot)
+            {
+                free(bucket);
+                return 0;
+            }
+
+            /* copy all the attributes */
+            slot->key = self->bucket[i].key;
+            slot->hash = self->bucket[i].hash;
+            slot->flags = self->bucket[i].flags;
+            slot->value = self->bucket[i].value;
+        }
+    }
+
+    /* replace with new one */
+    free(self->bucket);
+    self->bucket = bucket;
+    self->capacity = capacity;
+    return 1;
 }
 
 void lcc_map_free(lcc_map_t *self)
@@ -105,7 +152,7 @@ void lcc_map_init(lcc_map_t *self, size_t value_size, lcc_map_dtor_fn dtor, void
 {
     /* initial map bucket */
     self->count = 0;
-    self->bucket = malloc(sizeof(lcc_map_node_t) * LCC_MAP_INIT_CAP);
+    self->bucket = calloc(LCC_MAP_INIT_CAP, sizeof(lcc_map_node_t));
     self->capacity = LCC_MAP_INIT_CAP;
     self->value_size = value_size;
 
@@ -136,8 +183,8 @@ char lcc_map_pop(lcc_map_t *self, lcc_string_t *key, void *data)
     lcc_string_unref(node->key);
 
     /* set the deleted flags */
-    node->flags |= LCC_MAP_FLAGS_DEL;
     self->count--;
+    node->flags |= LCC_MAP_FLAGS_DEL;
     return 1;
 }
 
@@ -197,16 +244,17 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *ne
     /* simple linear probing algorithm */
     for (size_t i = 0; i < self->capacity; i++)
     {
-        /* actual index */
-        size_t p = (i + index) % self->capacity;
-
         /* use empty node or reuse deleted node */
-        if ((self->bucket[p].flags == 0) ||
-            (self->bucket[p].flags == LCC_MAP_FLAGS_DEL))
+        if ((self->bucket[index].flags == 0) ||
+            (self->bucket[index].flags == LCC_MAP_FLAGS_DEL))
         {
-            node = &(self->bucket[p]);
+            node = &(self->bucket[index]);
             break;
         }
+
+        /* move to next index */
+        index++;
+        index %= self->capacity;
     }
 
     /* must exists */
