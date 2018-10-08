@@ -11,6 +11,112 @@
 
 /*** Tokens ***/
 
+static inline int _lcc_hex_value(char hex)
+{
+    if ((hex >= '0') && (hex <= '9'))
+        return hex - '0';
+    else if ((hex >= 'a') && (hex <= 'f'))
+        return hex - 'a' + 10;
+    else
+        return hex - 'A' + 10;
+}
+
+static lcc_string_t *_lcc_string_eval(lcc_string_t *self, char allow_gnuext)
+{
+    /* string boundary */
+    char *p = self->buf;
+    char *q = self->buf;
+    char *e = self->buf + self->len;
+
+    /* process the entire string */
+    while (p < e)
+    {
+        /* not an escape character, copy as is */
+        if (*p != '\\')
+        {
+            *q++ = *p++;
+            continue;
+        }
+
+        /* skip the '\\' character */
+        switch (*++p)
+        {
+            /* these characters should be copied as is */
+            case '?':
+            case '"':
+            case '\'':
+            case '\\':
+            {
+                *q++ = *p++;
+                break;
+            }
+
+            /* single-character escape sequence */
+            case 'a': { p++; *q++ = '\a'; break; }
+            case 'b': { p++; *q++ = '\b'; break; }
+            case 'f': { p++; *q++ = '\f'; break; }
+            case 'n': { p++; *q++ = '\n'; break; }
+            case 'r': { p++; *q++ = '\r'; break; }
+            case 't': { p++; *q++ = '\t'; break; }
+            case 'v': { p++; *q++ = '\v'; break; }
+
+            /* hexadecimal escape characters */
+            case 'x':
+            {
+                /* parse exact 2 digits */
+                int msb = _lcc_hex_value(*++p);
+                int lsb = _lcc_hex_value(*++p);
+
+                /* convert to character */
+                p++;
+                *q++ = (char)((msb << 4) | lsb);
+                break;
+            }
+
+            /* octal escape characters */
+            case '0' ... '7':
+            {
+                /* valid range of octal characters
+                 * in 8-bit ASCII is '\000' ~ '\377' */
+                int val = 0;
+                int count = ((*p <= '3') ? 1 : 0) + 2;
+
+                /* parse at most `count` digits */
+                for (int i = 0; (i < count) && (*p >= '0') && (*p <= '7'); i++)
+                {
+                    val <<= 3;
+                    val |= (*p++ - '0') & 0x07;
+                }
+
+                /* convert to character */
+                *q++ = (char)val;
+                break;
+            }
+
+            /* other characters */
+            default:
+            {
+                /* might be GNU extension escape character */
+                if ((*p == 'e') && allow_gnuext)
+                {
+                    p++;
+                    *q++ = '\033';
+                    break;
+                }
+
+                /* otherwise it's an error */
+                fprintf(stderr, "*** FATAL: unrecognized escape character '\\x%02x'\n", (uint8_t)(*p));
+                abort();
+            }
+        }
+    }
+
+    /* end the result string */
+    *q = 0;
+    self->len = q - p;
+    return self;
+}
+
 void lcc_token_free(lcc_token_t *self)
 {
     if (self)
@@ -52,14 +158,9 @@ void lcc_token_free(lcc_token_t *self)
                         lcc_string_unref(self->literal.v_string);
                         break;
                     }
-
-                    case LCC_LT_NUMBER:
-                    {
-                        lcc_string_unref(self->literal.v_number);
-                        break;
-                    }
                 }
 
+                lcc_string_unref(self->literal.raw);
                 break;
             }
 
@@ -136,137 +237,76 @@ lcc_token_t *lcc_token_from_operator(lcc_operator_t operator)
     return self;
 }
 
-lcc_token_t *lcc_token_from_int(int value)
+lcc_token_t *lcc_token_from_char(lcc_string_t *value, char allow_gnuext)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_INT;
-    self->literal.v_int = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_long(long value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_LONG;
-    self->literal.v_long = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_longlong(long long value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_LONGLONG;
-    self->literal.v_longlong = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_uint(unsigned int value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_UINT;
-    self->literal.v_uint = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_ulong(unsigned long value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_ULONG;
-    self->literal.v_ulong = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_ulonglong(unsigned long long value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_ULONGLONG;
-    self->literal.v_ulonglong = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_float(float value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_FLOAT;
-    self->literal.v_float = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_double(double value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_DOUBLE;
-    self->literal.v_double = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_longdouble(long double value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_LONGDOUBLE;
-    self->literal.v_longdouble = value;
-    return self;
-}
-
-lcc_token_t *lcc_token_from_char(lcc_string_t *value)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_LITERAL;
+    self->literal.raw = value;
     self->literal.type = LCC_LT_CHAR;
-    self->literal.v_char = value;
+    self->literal.v_char = _lcc_string_eval(lcc_string_copy(value), allow_gnuext);
     return self;
 }
 
-lcc_token_t *lcc_token_from_string(lcc_string_t *value)
+lcc_token_t *lcc_token_from_string(lcc_string_t *value, char allow_gnuext)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
+    self->literal.raw = value;
     self->literal.type = LCC_LT_STRING;
-    self->literal.v_string = value;
+    self->literal.v_string = _lcc_string_eval(lcc_string_copy(value), allow_gnuext);
     return self;
 }
 
-lcc_token_t *lcc_token_from_number(lcc_string_t *value)
+#define _LCC_NUM_BASE(num) \
+    ((num[0] != '0') ? 10 : ((num[1] == 'x') || (num[1] == 'X')) ? 16 : 8)
+
+lcc_token_t *lcc_token_from_number(lcc_string_t *value, lcc_literal_type_t type)
 {
+    /* create a new token */
+    const char *num = value->buf;
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+
+    /* set as literal */
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
-    self->literal.type = LCC_LT_NUMBER;
-    self->literal.v_number = value;
+
+    /* parse each type of numbers */
+    switch (type)
+    {
+        /* integers */
+        case LCC_LT_INT        :
+        case LCC_LT_LONG       : self->literal.v_long       = strtol  (num, NULL, _LCC_NUM_BASE(num)); break;
+        case LCC_LT_LONGLONG   : self->literal.v_longlong   = strtoll (num, NULL, _LCC_NUM_BASE(num)); break;
+        case LCC_LT_UINT       :
+        case LCC_LT_ULONG      : self->literal.v_ulong      = strtoul (num, NULL, _LCC_NUM_BASE(num)); break;
+        case LCC_LT_ULONGLONG  : self->literal.v_ulonglong  = strtoull(num, NULL, _LCC_NUM_BASE(num)); break;
+
+        /* floats */
+        case LCC_LT_FLOAT      : self->literal.v_float      = strtof  (num, NULL); break;
+        case LCC_LT_DOUBLE     : self->literal.v_double     = strtod  (num, NULL); break;
+        case LCC_LT_LONGDOUBLE : self->literal.v_longdouble = strtold (num, NULL); break;
+
+        /* cannot happen */
+        case LCC_LT_CHAR:
+        case LCC_LT_STRING:
+        {
+            fprintf(stderr, "*** FATAL: not a number\n");
+            abort();
+        }
+    }
+
+    /* preserve raw value */
+    self->literal.raw = value;
+    self->literal.type = type;
     return self;
 }
+
+#undef _LCC_NUM_BASE
 
 const char *lcc_token_kw_name(lcc_keyword_t value)
 {
@@ -377,26 +417,9 @@ lcc_string_t *lcc_token_as_string(lcc_token_t *self)
     {
         case LCC_TK_EOF      : return lcc_string_from("<EOF>");
         case LCC_TK_IDENT    : return lcc_string_ref(self->ident);
+        case LCC_TK_LITERAL  : return lcc_string_ref(self->literal.raw);
         case LCC_TK_KEYWORD  : return lcc_string_from(lcc_token_kw_name(self->keyword));
         case LCC_TK_OPERATOR : return lcc_string_from(lcc_token_op_name(self->operator));
-        case LCC_TK_LITERAL  :
-        {
-            switch (self->literal.type)
-            {
-                case LCC_LT_INT        : return lcc_string_from_format("%d"     , self->literal.v_int        );
-                case LCC_LT_LONG       : return lcc_string_from_format("%ld"    , self->literal.v_long       );
-                case LCC_LT_LONGLONG   : return lcc_string_from_format("%lld"   , self->literal.v_longlong   );
-                case LCC_LT_UINT       : return lcc_string_from_format("%u"     , self->literal.v_uint       );
-                case LCC_LT_ULONG      : return lcc_string_from_format("%lu"    , self->literal.v_ulong      );
-                case LCC_LT_ULONGLONG  : return lcc_string_from_format("%llu"   , self->literal.v_ulonglong  );
-                case LCC_LT_FLOAT      : return lcc_string_from_format("%f"     , self->literal.v_float      );
-                case LCC_LT_DOUBLE     : return lcc_string_from_format("%lf"    , self->literal.v_double     );
-                case LCC_LT_LONGDOUBLE : return lcc_string_from_format("%Lf"    , self->literal.v_longdouble );
-                case LCC_LT_CHAR       : return lcc_string_from_format("'%s'"   , self->literal.v_char->buf  );
-                case LCC_LT_STRING     : return lcc_string_from_format("\"%s\"" , self->literal.v_string->buf);
-                case LCC_LT_NUMBER     : return lcc_string_ref(self->literal.v_number);
-            }
-        }
     }
 
     abort();
@@ -414,18 +437,17 @@ lcc_string_t *lcc_token_to_string(lcc_token_t *self)
         {
             switch (self->literal.type)
             {
-                case LCC_LT_INT        : return lcc_string_from_format("{INT:%d}"           , self->literal.v_int);
-                case LCC_LT_LONG       : return lcc_string_from_format("{LONG:%ldl}"        , self->literal.v_long);
-                case LCC_LT_LONGLONG   : return lcc_string_from_format("{LONGLONG:%lldll}"  , self->literal.v_longlong);
-                case LCC_LT_UINT       : return lcc_string_from_format("{UINT:%uu}"         , self->literal.v_uint);
-                case LCC_LT_ULONG      : return lcc_string_from_format("{ULONG:%luul}"      , self->literal.v_ulong);
-                case LCC_LT_ULONGLONG  : return lcc_string_from_format("{ULONGLONG:%lluull}", self->literal.v_ulonglong);
-                case LCC_LT_FLOAT      : return lcc_string_from_format("{FLOAT:%ff}"        , self->literal.v_float);
-                case LCC_LT_DOUBLE     : return lcc_string_from_format("{DOUBLE:%lf}"       , self->literal.v_double);
-                case LCC_LT_LONGDOUBLE : return lcc_string_from_format("{LONGDOUBLE:%LfL}"  , self->literal.v_longdouble);
-                case LCC_LT_CHAR       : return lcc_string_from_format("{CHARS:'%s'}"       , self->literal.v_char->buf);
-                case LCC_LT_STRING     : return lcc_string_from_format("{STRING:\"%s\"}"    , self->literal.v_string->buf);
-                case LCC_LT_NUMBER     : return lcc_string_from_format("{NUMBER:%s}"        , self->literal.v_number->buf);
+                case LCC_LT_INT        : return lcc_string_from_format("{INT:%s}"       , self->literal.raw->buf);
+                case LCC_LT_LONG       : return lcc_string_from_format("{LONG:%s}"      , self->literal.raw->buf);
+                case LCC_LT_LONGLONG   : return lcc_string_from_format("{LONGLONG:%s}"  , self->literal.raw->buf);
+                case LCC_LT_UINT       : return lcc_string_from_format("{UINT:%s}"      , self->literal.raw->buf);
+                case LCC_LT_ULONG      : return lcc_string_from_format("{ULONG:%s}"     , self->literal.raw->buf);
+                case LCC_LT_ULONGLONG  : return lcc_string_from_format("{ULONGLONG:%s}" , self->literal.raw->buf);
+                case LCC_LT_FLOAT      : return lcc_string_from_format("{FLOAT:%s}"     , self->literal.raw->buf);
+                case LCC_LT_DOUBLE     : return lcc_string_from_format("{DOUBLE:%s}"    , self->literal.raw->buf);
+                case LCC_LT_LONGDOUBLE : return lcc_string_from_format("{LONGDOUBLE:%s}", self->literal.raw->buf);
+                case LCC_LT_CHAR       : return lcc_string_from_format("{CHARS:'%s'}"   , self->literal.raw->buf);
+                case LCC_LT_STRING     : return lcc_string_from_format("{STRING:\"%s\"}", self->literal.raw->buf);
             }
         }
     }
@@ -732,19 +754,39 @@ static inline void _lcc_commit_ident(lcc_lexer_t *self)
 
 static inline void _lcc_commit_chars(lcc_lexer_t *self)
 {
-    lcc_token_attach(&(self->tokens), lcc_token_from_char(_lcc_dump_token(self)));
+    /* create a new token */
+    int gnuext = self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR;
+    lcc_token_t *token = lcc_token_from_char(_lcc_dump_token(self), (gnuext != 0));
+
+    /* attach to token chain */
+    lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
 }
 
 static inline void _lcc_commit_string(lcc_lexer_t *self)
 {
-    lcc_token_attach(&(self->tokens), lcc_token_from_string(_lcc_dump_token(self)));
+    /* create a new token */
+    int gnuext = self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR;
+    lcc_token_t *token = lcc_token_from_string(_lcc_dump_token(self), (gnuext != 0));
+
+    /* attach to token chain */
+    lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
 }
 
-static inline void _lcc_commit_number(lcc_lexer_t *self)
+static inline void _lcc_commit_number(lcc_lexer_t *self, lcc_literal_type_t type)
 {
-    lcc_token_attach(&(self->tokens), lcc_token_from_number(_lcc_dump_token(self)));
+    /* clear errno before dumping numbers */
+    errno = 0;
+    lcc_string_t *num = _lcc_dump_token(self);
+    lcc_token_t  *token = lcc_token_from_number(num, type);
+
+    /* check for overflow */
+    if (errno == ERANGE)
+        _lcc_lexer_warning(self, "Literal %s is out of range", num->buf);
+
+    /* attach to token chain */
+    lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
 }
 
@@ -812,17 +854,42 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 break;
             }
 
-            /* in the middle of parsing numbers, commit number */
+            /* in the middle of parsing integers */
             case LCC_LX_SUBSTATE_NUMBER:
             case LCC_LX_SUBSTATE_NUMBER_ZERO:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT:
+            {
+                _lcc_commit_number(self, LCC_LT_INT);
+                break;
+            }
+
+            /* in the middle of parsing integers (unsigned) */
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_U:
+            {
+                _lcc_commit_number(self, LCC_LT_UINT);
+                break;
+            }
+
+            /* in the middle of parsing integers (long) */
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_L:
+            {
+                _lcc_commit_number(self, LCC_LT_LONG);
+                break;
+            }
+
+            /* in the middle of parsing integers (unsigned long) */
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_UL:
+            {
+                _lcc_commit_number(self, LCC_LT_ULONG);
+                break;
+            }
+
+            /* in the middle of parsing floats (double) */
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL:
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP:
             {
-                _lcc_commit_number(self);
+                _lcc_commit_number(self, LCC_LT_DOUBLE);
                 break;
             }
 
@@ -1293,7 +1360,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    _lcc_commit_number(self);
+                    _lcc_commit_number(self, LCC_LT_FLOAT);
                     break;
                 }
 
@@ -1321,7 +1388,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     {
                         self->state = LCC_LX_STATE_ACCEPT;
                         lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                        _lcc_commit_number(self);
+                        _lcc_commit_number(self, LCC_LT_LONGDOUBLE);
                     }
                     else
                     {
@@ -1337,7 +1404,13 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 default:
                 _lcc_label_number_end:
                 {
-                    _lcc_commit_number(self);
+                    /* move to next character */
+                    if (self->substate == LCC_LX_SUBSTATE_NUMBER)
+                        _lcc_commit_number(self, LCC_LT_INT);
+                    else
+                        _lcc_commit_number(self, LCC_LT_DOUBLE);
+
+                    /* accept but keep this character */
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
                     break;
                 }
@@ -1403,7 +1476,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    _lcc_commit_number(self);
+                    _lcc_commit_number(self, LCC_LT_FLOAT);
                     break;
                 }
 
@@ -1430,7 +1503,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* other characters, commit a single zero */
                 default:
                 {
-                    _lcc_commit_number(self);
+                    _lcc_commit_number(self, LCC_LT_INT);
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
                     break;
                 }
@@ -1481,8 +1554,37 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             }
             else if (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D)
             {
-                _lcc_commit_number(self);
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                switch (self->ch)
+                {
+                    /* unsigned specifier */
+                    case 'u':
+                    case 'U':
+                    {
+                        self->state = LCC_LX_STATE_SHIFT;
+                        self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_U;
+                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                        break;
+                    }
+
+                    /* long specifier */
+                    case 'l':
+                    case 'L':
+                    {
+                        self->state = LCC_LX_STATE_SHIFT;
+                        self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                        break;
+                    }
+
+                    /* not a specifier */
+                    default:
+                    {
+                        _lcc_commit_number(self, LCC_LT_INT);
+                        self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                        break;
+                    }
+                }
+
                 break;
             }
             else
@@ -1529,7 +1631,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* other characters */
                 default:
                 {
-                    _lcc_commit_number(self);
+                    _lcc_commit_number(self, LCC_LT_INT);
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
                     break;
                 }
@@ -1543,13 +1645,13 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         {
             if ((self->ch != 'l') && (self->ch != 'L'))
             {
-                _lcc_commit_number(self);
+                _lcc_commit_number(self, LCC_LT_UINT);
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
             }
             else
             {
                 self->state = LCC_LX_STATE_SHIFT;
-                self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_UL;
                 lcc_token_buffer_append(&(self->token_buffer), self->ch);
             }
 
@@ -1561,14 +1663,32 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         {
             if ((self->ch != 'l') && (self->ch != 'L'))
             {
-                _lcc_commit_number(self);
+                _lcc_commit_number(self, LCC_LT_LONG);
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
             }
             else
             {
                 self->state = LCC_LX_STATE_ACCEPT;
                 lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                _lcc_commit_number(self);
+                _lcc_commit_number(self, LCC_LT_LONGLONG);
+            }
+
+            break;
+        }
+
+        /* unsigned long specifier */
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_UL:
+        {
+            if ((self->ch != 'l') && (self->ch != 'L'))
+            {
+                _lcc_commit_number(self, LCC_LT_ULONG);
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_ACCEPT;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                _lcc_commit_number(self, LCC_LT_ULONGLONG);
             }
 
             break;
@@ -1612,18 +1732,46 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* scientific notation of decimal numbers - exponent part */
         case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP:
         {
-            /* not a digit anymore, accept but keep the character */
-            if (!(isdigit(self->ch)))
+            switch (self->ch)
             {
-                _lcc_commit_number(self);
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                break;
+                /* float specifier */
+                case 'f':
+                case 'F':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    _lcc_commit_number(self, LCC_LT_FLOAT);
+                    break;
+                }
+
+                /* long double specifier */
+                case 'l':
+                case 'L':
+                {
+                    self->state = LCC_LX_STATE_ACCEPT;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    _lcc_commit_number(self, LCC_LT_LONGDOUBLE);
+                    break;
+                }
+
+                /* digits */
+                case '0' ... '9':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* other characters */
+                default:
+                {
+                    _lcc_commit_number(self, LCC_LT_DOUBLE);
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    break;
+                }
             }
 
-            /* otherwise append to token buffer */
-            self->state = LCC_LX_STATE_SHIFT;
-            self->substate = LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP;
-            lcc_token_buffer_append(&(self->token_buffer), self->ch);
             break;
         }
 
@@ -1909,6 +2057,20 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
     token->ident;                                           \
 })
 
+#define _LCC_ENSURE_RAWSTR(self, token, efmt, ...)          \
+({                                                          \
+    /* must be a string literal */                          \
+    if ((token->type != LCC_TK_LITERAL) ||                  \
+        (token->literal.type != LCC_LT_STRING))             \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
+                                                            \
+    /* extract the token */                                 \
+    token->literal.raw;                                     \
+})
+
 #define _LCC_ENSURE_STRING(self, token, efmt, ...)          \
 ({                                                          \
     /* must be a string literal */                          \
@@ -1950,123 +2112,10 @@ static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path)
     return 1;
 }
 
-static inline int _lcc_hex_value(char hex)
-{
-    if ((hex >= '0') && (hex <= '9'))
-        return hex - '0';
-    else if ((hex >= 'a') && (hex <= 'f'))
-        return hex - 'a' + 10;
-    else
-        return hex - 'A' + 10;
-}
-
 static inline char _lcc_file_exists(lcc_string_t *path)
 {
     struct stat st;
     return stat(path->buf, &st) == 0;
-}
-
-static inline void _lcc_string_translate(lcc_string_t *self, int gnuext)
-{
-    /* string boundary */
-    char *p = self->buf;
-    char *q = self->buf;
-    char *e = self->buf + self->len;
-
-    /* process the entire string */
-    while (p < e)
-    {
-        /* non-escape characters, copy as is */
-        if (*p != '\\')
-        {
-            *q++ = *p++;
-            continue;
-        }
-
-        /* skip the '\\' character */
-        switch (*++p)
-        {
-            /* these characters should be copied as is */
-            case '?':
-            case '"':
-            case '\'':
-            case '\\':
-            {
-                *q++ = *p++;
-                break;
-            }
-
-            /* single-character escape sequence */
-            case 'a': { p++; *q++ = '\a'; break; }
-            case 'b': { p++; *q++ = '\b'; break; }
-            case 'f': { p++; *q++ = '\f'; break; }
-            case 'n': { p++; *q++ = '\n'; break; }
-            case 'r': { p++; *q++ = '\r'; break; }
-            case 't': { p++; *q++ = '\t'; break; }
-            case 'v': { p++; *q++ = '\v'; break; }
-
-            /* GNU extension escape character */
-            case 'e':
-            {
-                if (gnuext & LCC_LX_GNUX_ESCAPE_CHAR)
-                {
-                    p++;
-                    *q++ = '\033';
-                    break;
-                }
-                else
-                {
-                    *q++ = '\\';
-                    *q++ = *p++;
-                    break;
-                }
-            }
-
-            /* hexadecimal escape characters */
-            case 'x':
-            {
-                /* parse exact 2 digits */
-                int msb = _lcc_hex_value(*++p);
-                int lsb = _lcc_hex_value(*++p);
-
-                /* convert to character */
-                p++;
-                *q++ = (char)((msb << 4) | lsb);
-                break;
-            }
-
-            /* octal escape characters */
-            case '0' ... '7':
-            {
-                /* valid range of octal characters
-                 * in 8-bit ASCII is '\000' ~ '\377' */
-                int val = 0;
-                int count = ((*p <= '3') ? 1 : 0) + 2;
-
-                /* parse at most `count` digits */
-                for (int i = 0; (i < count) && (*p >= '0') && (*p <= '7'); i++)
-                {
-                    val <<= 3;
-                    val |= (*p++ - '0') & 0x07;
-                }
-
-                /* convert to character */
-                *q++ = (char)val;
-                break;
-            }
-
-            /* should not be possible */
-            default:
-            {
-                fprintf(stderr, "*** FATAL: unrecognized escape character '\\x%02x'\n", (uint8_t)(*p));
-                abort();
-            }
-        }
-    }
-
-    /* end the result string */
-    *q = 0;
-    self->len = q - p;
 }
 
 static inline lcc_string_t *_lcc_path_concat(lcc_string_t *base, lcc_string_t *name)
@@ -2105,7 +2154,6 @@ static inline lcc_string_t *_lcc_make_message(lcc_lexer_t *self)
 
         /* clear the token */
         lcc_token_free(t);
-        _lcc_string_translate(s, self->gnuext);
         return s;
     }
 
@@ -2494,7 +2542,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         {
             /* extract the file name */
             lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing include file name");
-            lcc_string_t *fname = _LCC_ENSURE_STRING(self, token, "Include file name must be a string");
+            lcc_string_t *fname = _LCC_ENSURE_RAWSTR(self, token, "Include file name must be a string");
 
             /* load the include file */
             if (_lcc_load_include(self, fname))
@@ -2536,20 +2584,6 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 self->tokens.next->prev = psym.body;
                 self->tokens.prev = &(self->tokens);
                 self->tokens.next = &(self->tokens);
-            }
-
-            // FIXME: remove this afterwards
-            printf("DEFINE(%zu): %s (%.16lx)\n", psym.args.array.count, self->macro_name->buf, psym.flags);
-            if (psym.flags & LCC_LXDF_DEFINE_F)
-                for (size_t i = 0; i < psym.args.array.count; i++)
-                    printf("* %s\n", lcc_string_array_get(&(psym.args), i)->buf);
-            if (psym.flags & LCC_LXDF_DEFINE_VAR)
-                printf("...\n");
-            for (lcc_token_t *p = psym.body->next; p != psym.body; p = p->next)
-            {
-                lcc_string_t *s = lcc_token_to_string(p);
-                printf(">> %s\n", s->buf);
-                lcc_string_unref(s);
             }
 
             /* add to predefined symbols */
@@ -2701,7 +2735,6 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             lcc_string_t *message = _LCC_ENSURE_STRING(self, token, "SCCS message must be a string");
 
             /* add to SCCS messages and release the token */
-            _lcc_string_translate(message, self->gnuext);
             lcc_string_array_append(&(self->sccs_msgs), lcc_string_ref(message));
             lcc_token_free(token);
             break;
@@ -2733,6 +2766,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
 #undef _LCC_FETCH_TOKEN
 #undef _LCC_ENSURE_IDENT
+#undef _LCC_ENSURE_RAWSTR
 #undef _LCC_ENSURE_STRING
 #undef _LCC_ENSURE_OPERATOR
 
@@ -2861,7 +2895,18 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     return 1;
 }
 
-char lcc_lexer_advance(lcc_lexer_t *self)
+lcc_token_t *lcc_lexer_next(lcc_lexer_t *self)
+{
+    /* advance lexer if no tokens remaining */
+    if (self->tokens.next == &(self->tokens))
+        if (!(lcc_lexer_advance(self)))
+            return NULL;
+
+    /* shift one token from lexer token list */
+    return lcc_token_detach(self->tokens.next);
+}
+
+lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
 {
     for (;;)
     {
@@ -3073,7 +3118,7 @@ char lcc_lexer_advance(lcc_lexer_t *self)
                 if (self->tokens.next == &(self->tokens))
                     break;
                 else
-                    return 1;
+                    return &(self->tokens);
             }
 
             /* token rejected */
@@ -3081,94 +3126,17 @@ char lcc_lexer_advance(lcc_lexer_t *self)
             {
                 self->state = LCC_LX_STATE_END;
                 self->substate = LCC_LX_SUBSTATE_NULL;
-                return 0;
+                return NULL;
             }
 
             /* end of lexing, emit an EOF token */
             case LCC_LX_STATE_END:
             {
                 lcc_token_attach(&(self->tokens), lcc_token_new());
-                return 1;
+                return &(self->tokens);
             }
         }
     }
-}
-
-lcc_token_t *lcc_lexer_next(lcc_lexer_t *self)
-{
-    /* shift one token */
-    _lcc_psym_t *psym;
-    lcc_token_t *token = lcc_lexer_shift(self);
-
-    /* check for errors */
-    if (!token)
-        return NULL;
-
-    /* check for token type */
-    switch (token->type)
-    {
-        /* EOF, keywords and operators */
-        case LCC_TK_EOF:
-        case LCC_TK_KEYWORD:
-        case LCC_TK_OPERATOR:
-            return token;
-
-        /* identifiers, may need substitution */
-        case LCC_TK_IDENT:
-        {
-            /* find in predefined symbols */
-            if (!(lcc_map_get(&(self->psyms), token->ident, (void **)(&psym))))
-                return token;
-
-            return token;
-        }
-
-        /* literals, may need translation */
-        case LCC_TK_LITERAL:
-        {
-            switch (token->literal.type)
-            {
-                /* chars literal */
-                case LCC_LT_CHAR:
-                {
-                    _lcc_string_translate(token->literal.v_char, self->gnuext);
-                    break;
-                }
-
-                /* string literal */
-                case LCC_LT_STRING:
-                {
-                    _lcc_string_translate(token->literal.v_string, self->gnuext);
-                    break;
-                }
-
-                /* number literal */
-                case LCC_LT_NUMBER:
-                {
-                    // TODO: translate numbers
-                    break;
-                }
-
-                /* otherwise, no translation required */
-                default:
-                    return token;
-            }
-        }
-    }
-
-    /* should not be possible here */
-    abort();
-}
-
-lcc_token_t *lcc_lexer_shift(lcc_lexer_t *self)
-{
-    /* advance lexer if no tokens remaining */
-    if (self->tokens.next == &(self->tokens))
-        if (!(lcc_lexer_advance(self)))
-            return NULL;
-
-    /* shift one token from lexer */
-    return lcc_token_detach(self->tokens.next);
 }
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value)

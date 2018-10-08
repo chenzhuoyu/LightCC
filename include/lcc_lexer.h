@@ -116,7 +116,6 @@ typedef enum _lcc_literal_type_t
     LCC_LT_LONGDOUBLE,      /* long double          */
     LCC_LT_CHAR,            /* '...'                */
     LCC_LT_STRING,          /* "..."                */
-    LCC_LT_NUMBER,          /* preprocessor numbers */
 } lcc_literal_type_t;
 
 typedef enum _lcc_token_type_t
@@ -130,6 +129,7 @@ typedef enum _lcc_token_type_t
 
 typedef struct _lcc_literal_t
 {
+    lcc_string_t *raw;
     lcc_literal_type_t type;
 
     union
@@ -145,7 +145,6 @@ typedef struct _lcc_literal_t
         long double         v_longdouble;
         lcc_string_t       *v_char;
         lcc_string_t       *v_string;
-        lcc_string_t       *v_number;
     };
 } lcc_literal_t;
 
@@ -171,22 +170,13 @@ void lcc_token_attach(lcc_token_t *self, lcc_token_t *next);
 lcc_token_t *lcc_token_new(void);
 lcc_token_t *lcc_token_detach(lcc_token_t *self);
 
-lcc_token_t *lcc_token_from_ident        (lcc_string_t       *ident);
-lcc_token_t *lcc_token_from_keyword      (lcc_keyword_t       keyword);
-lcc_token_t *lcc_token_from_operator     (lcc_operator_t      operator);
+lcc_token_t *lcc_token_from_ident(lcc_string_t *ident);
+lcc_token_t *lcc_token_from_keyword(lcc_keyword_t keyword);
+lcc_token_t *lcc_token_from_operator(lcc_operator_t operator);
 
-lcc_token_t *lcc_token_from_int          (int                 value);
-lcc_token_t *lcc_token_from_long         (long                value);
-lcc_token_t *lcc_token_from_longlong     (long long           value);
-lcc_token_t *lcc_token_from_uint         (unsigned int        value);
-lcc_token_t *lcc_token_from_ulong        (unsigned long       value);
-lcc_token_t *lcc_token_from_ulonglong    (unsigned long long  value);
-lcc_token_t *lcc_token_from_float        (float               value);
-lcc_token_t *lcc_token_from_double       (double              value);
-lcc_token_t *lcc_token_from_longdouble   (long double         value);
-lcc_token_t *lcc_token_from_char         (lcc_string_t       *value);
-lcc_token_t *lcc_token_from_string       (lcc_string_t       *value);
-lcc_token_t *lcc_token_from_number       (lcc_string_t       *value);
+lcc_token_t *lcc_token_from_char(lcc_string_t *value, char allow_gnuext);
+lcc_token_t *lcc_token_from_string(lcc_string_t *value, char allow_gnuext);
+lcc_token_t *lcc_token_from_number(lcc_string_t *value, lcc_literal_type_t type);
 
 const char *lcc_token_kw_name(lcc_keyword_t value);
 const char *lcc_token_op_name(lcc_operator_t value);
@@ -264,6 +254,7 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT,
     LCC_LX_SUBSTATE_NUMBER_INTEGER_U,
     LCC_LX_SUBSTATE_NUMBER_INTEGER_L,
+    LCC_LX_SUBSTATE_NUMBER_INTEGER_UL,
     LCC_LX_SUBSTATE_NUMBER_DECIMAL,
     LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI,
     LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP,
@@ -396,10 +387,9 @@ typedef enum _lcc_lexer_gnu_ext_t
 
 void lcc_lexer_free(lcc_lexer_t *self);
 char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file);
-char lcc_lexer_advance(lcc_lexer_t *self);
 
 lcc_token_t *lcc_lexer_next(lcc_lexer_t *self);
-lcc_token_t *lcc_lexer_shift(lcc_lexer_t *self);
+lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self);
 
 void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value);
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);
