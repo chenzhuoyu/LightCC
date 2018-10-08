@@ -746,10 +746,22 @@ static inline lcc_string_t *_lcc_dump_token(lcc_lexer_t *self)
     return lcc_string_from_buffer(p, n);
 }
 
-static inline void _lcc_commit_ident(lcc_lexer_t *self)
+static inline char _lcc_commit_ident(lcc_lexer_t *self)
 {
+    /* check the restriction of preprocessor reserved identifiers */
+    if ((!(self->flags & LCC_LXDF_DEFINE_VAR) ||
+         !(self->flags & LCC_LXDF_DEFINE_FINE)) &&
+        (!(strcmp(self->token_buffer.buf, "__VA_OPT__")) ||
+         !(strcmp(self->token_buffer.buf, "__VA_ARGS__"))))
+    {
+        _lcc_lexer_error(self, "'%s' is not allowed here", self->token_buffer.buf);
+        return 0;
+    }
+
+    /* attach to token chain */
     lcc_token_attach(&(self->tokens), lcc_token_from_ident(_lcc_dump_token(self)));
     lcc_token_buffer_reset(&(self->token_buffer));
+    return 1;
 }
 
 static inline void _lcc_commit_chars(lcc_lexer_t *self)
@@ -823,8 +835,10 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing identifiers, accept or commit it */
             case LCC_LX_SUBSTATE_NAME:
             {
-                _lcc_commit_ident(self);
-                break;
+                if (_lcc_commit_ident(self))
+                    break;
+                else
+                    return;
             }
 
             /* in the middle of parsing tokens */
@@ -1100,7 +1114,10 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             }
 
             /* commit the identifier */
-            _lcc_commit_ident(self);
+            if (!(_lcc_commit_ident(self)))
+                return;
+
+            /* keep the character */
             self->state = LCC_LX_STATE_ACCEPT_KEEP;
             break;
         }
