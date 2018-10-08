@@ -2331,7 +2331,7 @@ static void _lcc_handle_define(lcc_lexer_t *self)
         }
 
         /* set a special flag after macro name parsed successfully
-         * required for identifying object-style or function-style macro */
+         * required for identifying object-like or function-like macro */
         self->flags |= LCC_LXDF_DEFINE_NS;
         self->defstate = LCC_LX_DEFSTATE_INIT;
         self->macro_name = lcc_string_ref(self->tokens.next->ident);
@@ -2342,7 +2342,7 @@ static void _lcc_handle_define(lcc_lexer_t *self)
         return;
     }
 
-    /* only respond to function-style macros that are not checked */
+    /* only respond to function-like macros that are not checked */
     if ((self->flags & LCC_LXDF_DEFINE_O) ||
         (self->flags & LCC_LXDF_DEFINE_FINE))
         return;
@@ -3053,7 +3053,7 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             case LCC_LX_STATE_GOT_CHAR:
             {
                 /* Special Case :: "#define" compiler directive
-                 * distingush object-style and function-style macros */
+                 * distingush object-like and function-like macros */
                 if ((self->flags & LCC_LXDN_DEFINE) &&
                     (self->flags & LCC_LXDF_DEFINE_MASK) == LCC_LXDF_DEFINE_NS)
                 {

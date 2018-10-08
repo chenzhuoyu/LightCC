@@ -324,8 +324,8 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXDN_SCCS           0x0000000000400000      /* #sccs directive */
 #define LCC_LXDN_MASK           0x0000000000ffff00      /* compiler directive name mask */
 
-#define LCC_LXDF_DEFINE_O       0x0000000001000000      /* object-style macro (weak flag) */
-#define LCC_LXDF_DEFINE_F       0x0000000002000000      /* function-style macro */
+#define LCC_LXDF_DEFINE_O       0x0000000001000000      /* object-like macro (weak flag) */
+#define LCC_LXDF_DEFINE_F       0x0000000002000000      /* function-like macro */
 #define LCC_LXDF_DEFINE_NS      0x0000000004000000      /* macro name already set */
 #define LCC_LXDF_DEFINE_VAR     0x0000000008000000      /* variadic function-like macro */
 #define LCC_LXDF_DEFINE_FINE    0x0000000010000000      /* macro is been checked */
