@@ -2271,7 +2271,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             }
 
             // FIXME: remove this afterwards
-            printf("DEFINE: %s\n", self->macro_name->buf);
+            printf("DEFINE: %s (%.16lx)\n", self->macro_name->buf, psym.flags);
             for (lcc_token_t *p = psym.body->next; p != psym.body; p = p->next)
             {
                 lcc_string_t *s = lcc_token_to_string(p);
@@ -2562,28 +2562,28 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     self->error_data = NULL;
 
     /* version symbols */
-//    lcc_lexer_add_define(self, "__LCC__", "1");
-//    lcc_lexer_add_define(self, "__GNUC__", "4");
-//
-//    /* standard defines */
-//    lcc_lexer_add_define(self, "__STDC__", "1");
-//    lcc_lexer_add_define(self, "__STDC_HOSTED__", "1");
-//    lcc_lexer_add_define(self, "__STDC_VERSION__", "199901L");
-//
-//    /* platform specific symbols */
-//    lcc_lexer_add_define(self, "unix", "1");
-//    lcc_lexer_add_define(self, "__unix", "1");
-//    lcc_lexer_add_define(self, "__unix__", "1");
-//    lcc_lexer_add_define(self, "__x86_64__", "1");
-//
-//    /* data model */
-//    lcc_lexer_add_define(self, "__LP64__", "1");
-//    lcc_lexer_add_define(self, "__SIZE_TYPE__", "unsigned long");
-//    lcc_lexer_add_define(self, "__PTRDIFF_TYPE__", "long");
-//
-//    /* other built-in types */
-//    lcc_lexer_add_define(self, "__WINT_TYPE__", "unsigned int");
-//    lcc_lexer_add_define(self, "__WCHAR_TYPE__", "int");
+    lcc_lexer_add_define(self, "__LCC__", "1");
+    lcc_lexer_add_define(self, "__GNUC__", "4");
+
+    /* standard defines */
+    lcc_lexer_add_define(self, "__STDC__", "1");
+    lcc_lexer_add_define(self, "__STDC_HOSTED__", "1");
+    lcc_lexer_add_define(self, "__STDC_VERSION__", "199901L");
+
+    /* platform specific symbols */
+    lcc_lexer_add_define(self, "unix", "1");
+    lcc_lexer_add_define(self, "__unix", "1");
+    lcc_lexer_add_define(self, "__unix__", "1");
+    lcc_lexer_add_define(self, "__x86_64__", "1");
+
+    /* data model */
+    lcc_lexer_add_define(self, "__LP64__", "1");
+    lcc_lexer_add_define(self, "__SIZE_TYPE__", "unsigned long");
+    lcc_lexer_add_define(self, "__PTRDIFF_TYPE__", "long");
+
+    /* other built-in types */
+    lcc_lexer_add_define(self, "__WINT_TYPE__", "unsigned int");
+    lcc_lexer_add_define(self, "__WCHAR_TYPE__", "int");
     return 1;
 }
 
