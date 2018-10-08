@@ -281,6 +281,14 @@ typedef enum _lcc_lexer_substate_t
     LCC_LX_SUBSTATE_COMMENT_BLOCK_END,
 } lcc_lexer_substate_t;
 
+typedef enum _lcc_lexer_define_state_t
+{
+    LCC_LX_DEFSTATE_INIT,
+    LCC_LX_DEFSTATE_PUSH_ARG,
+    LCC_LX_DEFSTATE_DELIM_OR_END,
+    LCC_LX_DEFSTATE_END,
+} lcc_lexer_define_state_t;
+
 typedef enum _lcc_lexer_error_type_t
 {
     LCC_LXET_ERROR,
@@ -333,14 +341,6 @@ typedef char (*lcc_lexer_on_error_fn)(
 
 #define LCC_LXDF_INCLUDE_SYS    0x0000000100000000      /* #include includes file from system headers */
 #define LCC_LXDF_INCLUDE_NEXT   0x0000000200000000      /* #include_next directive */
-
-typedef enum _lcc_lexer_define_state_t
-{
-    LCC_LX_DEFSTATE_INIT,
-    LCC_LX_DEFSTATE_PUSH_ARG,
-    LCC_LX_DEFSTATE_DELIM_OR_END,
-    LCC_LX_DEFSTATE_END,
-} lcc_lexer_define_state_t;
 
 typedef struct _lcc_lexer_t
 {
