@@ -805,7 +805,8 @@ static inline void _lcc_commit_number(lcc_lexer_t *self, lcc_literal_type_t type
 static void _lcc_handle_substate(lcc_lexer_t *self)
 {
     /* check for EOF and EOL flags */
-    if ((self->flags & LCC_LXF_END))
+    if ((self->flags & LCC_LXF_EOF) ||
+        (self->flags & LCC_LXF_EOL))
     {
         /* check for sub-state */
         switch (self->substate)
@@ -933,7 +934,8 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             self->state = LCC_LX_STATE_ACCEPT;
 
         /* clear those flags */
-        self->flags &= ~LCC_LXF_END;
+        self->flags &= ~LCC_LXF_EOF;
+        self->flags &= ~LCC_LXF_EOL;
         return;
     }
 

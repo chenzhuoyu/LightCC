@@ -308,8 +308,6 @@ typedef char (*lcc_lexer_on_error_fn)(
 
 #define LCC_LXF_EOL             0x0000000000000001      /* End-Of-Line encountered */
 #define LCC_LXF_EOF             0x0000000000000002      /* End-Of-File encountered */
-#define LCC_LXF_END             0x0000000000000003      /* EOF or EOL encountered */
-
 #define LCC_LXF_EOS             0x0000000000000004      /* End-Of-Source encountered */
 #define LCC_LXF_DIRECTIVE       0x0000000000000008      /* parsing compiler directive */
 #define LCC_LXF_CHAR_SEQ        0x0000000000000010      /* parsing character sequence rather than string */
