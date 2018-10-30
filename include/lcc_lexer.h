@@ -2,6 +2,7 @@
 #define LCC_LEXER_H
 
 #include <stdio.h>
+#include <stdint.h>
 
 #include "lcc_map.h"
 #include "lcc_array.h"
@@ -99,7 +100,7 @@ typedef enum _lcc_operator_t
     LCC_OP_SEMICOLON,       /* Semicolon        ;   */
     LCC_OP_DEREF,           /* Dereferencing    ->  */
     LCC_OP_ELLIPSIS,        /* Ellipsis         ... */
-    LCC_OP_STR,             /* Stringize (PP)   #   */
+    LCC_OP_STRINGIZE,       /* Stringize (PP)   #   */
     LCC_OP_CONCAT,          /* Concat (PP)      ##  */
 } lcc_operator_t;
 
@@ -152,6 +153,9 @@ typedef struct _lcc_token_t
 {
     struct _lcc_token_t *prev;
     struct _lcc_token_t *next;
+
+    char                 ref;
+    lcc_string_t        *src;
     lcc_token_type_t     type;
 
     union
@@ -165,21 +169,25 @@ typedef struct _lcc_token_t
 
 void lcc_token_free(lcc_token_t *self);
 void lcc_token_init(lcc_token_t *self);
+void lcc_token_clear(lcc_token_t *self);
 void lcc_token_attach(lcc_token_t *self, lcc_token_t *next);
 
 lcc_token_t *lcc_token_new(void);
+lcc_token_t *lcc_token_copy(lcc_token_t *self);
 lcc_token_t *lcc_token_detach(lcc_token_t *self);
 
-lcc_token_t *lcc_token_from_ident(lcc_string_t *ident);
-lcc_token_t *lcc_token_from_keyword(lcc_keyword_t keyword);
-lcc_token_t *lcc_token_from_operator(lcc_operator_t operator);
+lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident);
+lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword);
+lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator);
 
-lcc_token_t *lcc_token_from_char(lcc_string_t *value, char allow_gnuext);
-lcc_token_t *lcc_token_from_string(lcc_string_t *value, char allow_gnuext);
-lcc_token_t *lcc_token_from_number(lcc_string_t *value, lcc_literal_type_t type);
+lcc_token_t *lcc_token_from_raw(lcc_string_t *src, lcc_string_t *value);
+lcc_token_t *lcc_token_from_char(lcc_string_t *src, lcc_string_t *value, char allow_gnuext);
+lcc_token_t *lcc_token_from_string(lcc_string_t *src, lcc_string_t *value, char allow_gnuext);
+lcc_token_t *lcc_token_from_number(lcc_string_t *src, lcc_string_t *value, lcc_literal_type_t type);
 
 const char *lcc_token_kw_name(lcc_keyword_t value);
 const char *lcc_token_op_name(lcc_operator_t value);
+
 lcc_string_t *lcc_token_as_string(lcc_token_t *self);
 lcc_string_t *lcc_token_to_string(lcc_token_t *self);
 
@@ -311,6 +319,7 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXF_EOS             0x0000000000000004      /* End-Of-Source encountered */
 #define LCC_LXF_DIRECTIVE       0x0000000000000008      /* parsing compiler directive */
 #define LCC_LXF_CHAR_SEQ        0x0000000000000010      /* parsing character sequence rather than string */
+#define LCC_LXF_SUBST           0x0000000000000020      /* substituting macros */
 #define LCC_LXF_MASK            0x00000000000000ff      /* lexer flags mask */
 
 #define LCC_LXDN_NULL           0x0000000000000100      /* # directive (null directive, does nothing) */
@@ -334,11 +343,32 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXDF_DEFINE_F       0x0000000002000000      /* function-like macro */
 #define LCC_LXDF_DEFINE_NS      0x0000000004000000      /* macro name already set */
 #define LCC_LXDF_DEFINE_VAR     0x0000000008000000      /* variadic function-like macro */
-#define LCC_LXDF_DEFINE_FINE    0x0000000010000000      /* macro is been checked */
+#define LCC_LXDF_DEFINE_NVAR    0x0000000010000000      /* named variadic arguments */
+#define LCC_LXDF_DEFINE_FINE    0x0000000020000000      /* macro is been checked */
+#define LCC_LXDF_DEFINE_USING   0x0000000040000000      /* macro is been using */
 #define LCC_LXDF_DEFINE_MASK    0x00000000ff000000      /* #define directive flags mask */
 
 #define LCC_LXDF_INCLUDE_SYS    0x0000000100000000      /* #include includes file from system headers */
 #define LCC_LXDF_INCLUDE_NEXT   0x0000000200000000      /* #include_next directive */
+
+typedef struct _lcc_psym_t
+{
+    long flags;
+    uint64_t *nx;
+    lcc_token_t *body;
+    lcc_string_t *name;
+    lcc_string_t *vaname;
+    lcc_string_array_t args;
+} lcc_psym_t;
+
+void lcc_psym_free(lcc_psym_t *self);
+void lcc_psym_init(
+    lcc_psym_t *self,
+    lcc_string_t *name,
+    lcc_string_array_t *args,
+    long flags,
+    lcc_string_t *vaname
+);
 
 typedef struct _lcc_lexer_t
 {
@@ -357,14 +387,17 @@ typedef struct _lcc_lexer_t
     lcc_lexer_define_state_t defstate;
 
     /* complex state buffers */
+    size_t subst_level;
     lcc_array_t eval_stack;
     lcc_string_t *macro_name;
+    lcc_string_t *macro_vaname;
     lcc_string_array_t macro_args;
 
     /* current file info */
     size_t col;
     size_t row;
     lcc_string_t *fname;
+    lcc_string_t *source;
 
     /* current file and token */
     char ch;

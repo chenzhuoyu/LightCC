@@ -2,7 +2,6 @@
 #include <errno.h>
 #include <libgen.h>
 #include <stdarg.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -170,15 +169,28 @@ void lcc_token_free(lcc_token_t *self)
         }
 
         lcc_token_detach(self);
+        lcc_string_unref(self->src);
         free(self);
     }
 }
 
 void lcc_token_init(lcc_token_t *self)
 {
+    self->ref = 0;
+    self->src = NULL;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_EOF;
+}
+
+void lcc_token_clear(lcc_token_t *self)
+{
+    /* clear all tokens on the chain */
+    while (self->next != self)
+        lcc_token_free(self->next);
+
+    /* and the header node */
+    lcc_token_free(self);
 }
 
 void lcc_token_attach(lcc_token_t *self, lcc_token_t *tail)
@@ -192,10 +204,83 @@ void lcc_token_attach(lcc_token_t *self, lcc_token_t *tail)
 lcc_token_t *lcc_token_new(void)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 1;
+    self->src = lcc_string_new(0);
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_EOF;
     return self;
+}
+
+lcc_token_t *lcc_token_copy(lcc_token_t *self)
+{
+    /* create a new token */
+    lcc_token_t *clone = malloc(sizeof(lcc_token_t));
+
+    /* clone by type */
+    switch (self->type)
+    {
+        /* EOF, nothing more to clone */
+        case LCC_TK_EOF:
+            break;
+
+        /* identifiers */
+        case LCC_TK_IDENT:
+        {
+            clone->ident = lcc_string_copy(self->ident);
+            break;
+        }
+
+        /* literals */
+        case LCC_TK_LITERAL:
+        {
+            /* copy literal by type */
+            switch (self->literal.type)
+            {
+                /* primitive types */
+                case LCC_LT_INT         : clone->literal.v_int        = self->literal.v_int;        break;
+                case LCC_LT_LONG        : clone->literal.v_long       = self->literal.v_long;       break;
+                case LCC_LT_LONGLONG    : clone->literal.v_longlong   = self->literal.v_longlong;   break;
+                case LCC_LT_UINT        : clone->literal.v_uint       = self->literal.v_uint;       break;
+                case LCC_LT_ULONG       : clone->literal.v_ulong      = self->literal.v_ulong;      break;
+                case LCC_LT_ULONGLONG   : clone->literal.v_ulonglong  = self->literal.v_ulonglong;  break;
+                case LCC_LT_FLOAT       : clone->literal.v_float      = self->literal.v_float;      break;
+                case LCC_LT_DOUBLE      : clone->literal.v_double     = self->literal.v_double;     break;
+                case LCC_LT_LONGDOUBLE  : clone->literal.v_longdouble = self->literal.v_longdouble; break;
+
+                /* character sequence and strings */
+                case LCC_LT_CHAR        : clone->literal.v_char       = lcc_string_copy(self->literal.v_char  ); break;
+                case LCC_LT_STRING      : clone->literal.v_string     = lcc_string_copy(self->literal.v_string); break;
+            }
+
+            /* also copy the raw value */
+            clone->literal.raw = lcc_string_copy(self->literal.raw);
+            clone->literal.type = self->literal.type;
+            break;
+        }
+
+        /* keywords */
+        case LCC_TK_KEYWORD:
+        {
+            clone->keyword = self->keyword;
+            break;
+        }
+
+        /* operators */
+        case LCC_TK_OPERATOR:
+        {
+            clone->operator = self->operator;
+            break;
+        }
+    }
+
+    /* set the new token type */
+    clone->ref = self->ref;
+    clone->src = lcc_string_copy(self->src);
+    clone->prev = clone;
+    clone->next = clone;
+    clone->type = self->type;
+    return clone;
 }
 
 lcc_token_t *lcc_token_detach(lcc_token_t *self)
@@ -207,9 +292,11 @@ lcc_token_t *lcc_token_detach(lcc_token_t *self)
     return self;
 }
 
-lcc_token_t *lcc_token_from_ident(lcc_string_t *ident)
+lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_IDENT;
@@ -217,9 +304,11 @@ lcc_token_t *lcc_token_from_ident(lcc_string_t *ident)
     return self;
 }
 
-lcc_token_t *lcc_token_from_keyword(lcc_keyword_t keyword)
+lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_KEYWORD;
@@ -227,9 +316,11 @@ lcc_token_t *lcc_token_from_keyword(lcc_keyword_t keyword)
     return self;
 }
 
-lcc_token_t *lcc_token_from_operator(lcc_operator_t operator)
+lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_OPERATOR;
@@ -237,9 +328,25 @@ lcc_token_t *lcc_token_from_operator(lcc_operator_t operator)
     return self;
 }
 
-lcc_token_t *lcc_token_from_char(lcc_string_t *value, char allow_gnuext)
+lcc_token_t *lcc_token_from_raw(lcc_string_t *src, lcc_string_t *value)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
+    self->prev = self;
+    self->next = self;
+    self->type = LCC_TK_LITERAL;
+    self->literal.raw = value;
+    self->literal.type = LCC_LT_STRING;
+    self->literal.v_string = lcc_string_copy(value);
+    return self;
+}
+
+lcc_token_t *lcc_token_from_char(lcc_string_t *src, lcc_string_t *value, char allow_gnuext)
+{
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
@@ -249,9 +356,11 @@ lcc_token_t *lcc_token_from_char(lcc_string_t *value, char allow_gnuext)
     return self;
 }
 
-lcc_token_t *lcc_token_from_string(lcc_string_t *value, char allow_gnuext)
+lcc_token_t *lcc_token_from_string(lcc_string_t *src, lcc_string_t *value, char allow_gnuext)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
@@ -264,13 +373,16 @@ lcc_token_t *lcc_token_from_string(lcc_string_t *value, char allow_gnuext)
 #define _LCC_NUM_BASE(num) \
     ((num[0] != '0') ? 10 : ((num[1] == 'x') || (num[1] == 'X')) ? 16 : 8)
 
-lcc_token_t *lcc_token_from_number(lcc_string_t *value, lcc_literal_type_t type)
+lcc_token_t *lcc_token_from_number(lcc_string_t *src, lcc_string_t *value, lcc_literal_type_t type)
 {
     /* create a new token */
     const char *num = value->buf;
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
 
     /* set as literal */
+    errno = 0;
+    self->ref = 0;
+    self->src = src;
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
@@ -404,7 +516,7 @@ const char *lcc_token_op_name(lcc_operator_t value)
         case LCC_OP_SEMICOLON : return ";";
         case LCC_OP_DEREF     : return "->";
         case LCC_OP_ELLIPSIS  : return "...";
-        case LCC_OP_STR       : return "#";
+        case LCC_OP_STRINGIZE : return "#";
         case LCC_OP_CONCAT    : return "##";
     }
 
@@ -607,14 +719,6 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
-typedef struct __lcc_psym_t
-{
-    long flags;
-    lcc_token_t *body;
-    lcc_string_t *name;
-    lcc_string_array_t args;
-} _lcc_psym_t;
-
 typedef struct __lcc_directive_bits_t
 {
     long bits;
@@ -640,12 +744,6 @@ static const _lcc_directive_bits_t DIRECTIVES[] = {
     { LCC_LXDN_SCCS         , "sccs"            },
     { 0                     , NULL              },
 };
-
-static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
-{
-    lcc_string_unref(((lcc_file_t *)item)->name);
-    lcc_string_array_free(&(((lcc_file_t *)item)->lines));
-}
 
 static void _lcc_lexer_error(lcc_lexer_t *self, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void _lcc_lexer_error(lcc_lexer_t *self, const char *fmt, ...)
@@ -746,60 +844,96 @@ static inline lcc_string_t *_lcc_dump_token(lcc_lexer_t *self)
     return lcc_string_from_buffer(p, n);
 }
 
-static inline char _lcc_commit_ident(lcc_lexer_t *self)
+static inline lcc_string_t *_lcc_swap_source(lcc_lexer_t *self, char keep_tail)
 {
-    /* check the restriction of preprocessor reserved identifiers */
-    if ((!(self->flags & LCC_LXDF_DEFINE_VAR) ||
-         !(self->flags & LCC_LXDF_DEFINE_FINE)) &&
-        (!(strcmp(self->token_buffer.buf, "__VA_OPT__")) ||
-         !(strcmp(self->token_buffer.buf, "__VA_ARGS__"))))
+    /* old and new strings */
+    lcc_string_t *old = self->source;
+    lcc_string_t *new = lcc_string_new(0);
+
+    /* remove last char as needed */
+    if (old->len && !keep_tail)
+        old->buf[--old->len] = 0;
+
+    /* reset the source buffer */
+    self->source = new;
+    return old;
+}
+
+static inline char _lcc_commit_ident(lcc_lexer_t *self, char keep_tail)
+{
+    /* check for preprocessor reserved identifiers */
+    if ((!(self->flags & LCC_LXDF_DEFINE_VAR) ||                /* must be variadic macro */
+          (self->flags & LCC_LXDF_DEFINE_NVAR) ||               /* but must not be named variadic macro */
+         !(self->flags & LCC_LXDF_DEFINE_FINE)) &&              /* must finish parsing the declaration */
+        (!(strcmp(self->token_buffer.buf, "__VA_OPT__")) ||     /* must not be "__VA_OPT__" */
+         !(strcmp(self->token_buffer.buf, "__VA_ARGS__"))))     /* must not be "__VA_ARGS__" */
     {
         _lcc_lexer_error(self, "'%s' is not allowed here", self->token_buffer.buf);
         return 0;
     }
 
+    /* create a new token */
+    lcc_token_t *token = lcc_token_from_ident(
+        _lcc_swap_source(self, keep_tail),
+        _lcc_dump_token(self)
+    );
+
     /* attach to token chain */
-    lcc_token_attach(&(self->tokens), lcc_token_from_ident(_lcc_dump_token(self)));
+    lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
     return 1;
 }
 
-static inline void _lcc_commit_chars(lcc_lexer_t *self)
+static inline void _lcc_commit_chars(lcc_lexer_t *self, char keep_tail)
 {
     /* create a new token */
-    int gnuext = self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR;
-    lcc_token_t *token = lcc_token_from_char(_lcc_dump_token(self), (gnuext != 0));
+    lcc_token_t *token = lcc_token_from_char(
+        _lcc_swap_source(self, keep_tail),
+        _lcc_dump_token(self),
+        (self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR) != 0
+    );
 
     /* attach to token chain */
     lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
 }
 
-static inline void _lcc_commit_string(lcc_lexer_t *self)
+static inline void _lcc_commit_string(lcc_lexer_t *self, char keep_tail)
 {
     /* create a new token */
-    int gnuext = self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR;
-    lcc_token_t *token = lcc_token_from_string(_lcc_dump_token(self), (gnuext != 0));
+    lcc_token_t *token = lcc_token_from_string(
+        _lcc_swap_source(self, keep_tail),
+        _lcc_dump_token(self),
+        (self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR) != 0
+    );
 
     /* attach to token chain */
     lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
 }
 
-static inline void _lcc_commit_number(lcc_lexer_t *self, lcc_literal_type_t type)
+static inline void _lcc_commit_number(lcc_lexer_t *self, lcc_literal_type_t type, char keep_tail)
 {
-    /* clear errno before dumping numbers */
-    errno = 0;
-    lcc_string_t *num = _lcc_dump_token(self);
-    lcc_token_t  *token = lcc_token_from_number(num, type);
+    /* create new tokens */
+    lcc_token_t *token = lcc_token_from_number(
+        _lcc_swap_source(self, keep_tail),
+        _lcc_dump_token(self),
+        type
+    );
 
     /* check for overflow */
     if (errno == ERANGE)
-        _lcc_lexer_warning(self, "Literal %s is out of range", num->buf);
+        _lcc_lexer_warning(self, "Literal %s is out of range", self->token_buffer.buf);
 
     /* attach to token chain */
     lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
+}
+
+static inline void _lcc_commit_operator(lcc_lexer_t *self, lcc_operator_t operator, char keep_tail)
+{
+    lcc_string_t *src = _lcc_swap_source(self, keep_tail);
+    lcc_token_attach(&(self->tokens), lcc_token_from_operator(src, operator));
 }
 
 static void _lcc_handle_substate(lcc_lexer_t *self)
@@ -836,7 +970,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing identifiers, accept or commit it */
             case LCC_LX_SUBSTATE_NAME:
             {
-                if (_lcc_commit_ident(self))
+                if (_lcc_commit_ident(self, 1))
                     break;
                 else
                     return;
@@ -864,7 +998,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 }
 
                 /* commit as string, but give a warning */
-                _lcc_commit_string(self);
+                _lcc_commit_string(self, 1);
                 _lcc_lexer_warning(self, "Invalid preprocessor token");
                 break;
             }
@@ -875,28 +1009,28 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT:
             {
-                _lcc_commit_number(self, LCC_LT_INT);
+                _lcc_commit_number(self, LCC_LT_INT, 1);
                 break;
             }
 
             /* in the middle of parsing integers (unsigned) */
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_U:
             {
-                _lcc_commit_number(self, LCC_LT_UINT);
+                _lcc_commit_number(self, LCC_LT_UINT, 1);
                 break;
             }
 
             /* in the middle of parsing integers (long) */
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_L:
             {
-                _lcc_commit_number(self, LCC_LT_LONG);
+                _lcc_commit_number(self, LCC_LT_LONG, 1);
                 break;
             }
 
             /* in the middle of parsing integers (unsigned long) */
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_UL:
             {
-                _lcc_commit_number(self, LCC_LT_ULONG);
+                _lcc_commit_number(self, LCC_LT_ULONG, 1);
                 break;
             }
 
@@ -904,27 +1038,27 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL:
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP:
             {
-                _lcc_commit_number(self, LCC_LT_DOUBLE);
+                _lcc_commit_number(self, LCC_LT_DOUBLE, 1);
                 break;
             }
 
             /* in the middle of parsing operators, accept or commit what already got */
-            case LCC_LX_SUBSTATE_NUMBER_OR_OP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_POINT  )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_PLUS    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PLUS   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_MINUS   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_MINUS  )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_STAR    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STAR   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_SLASH   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH  )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_PERCENT : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_PERCENT)); break;
-            case LCC_LX_SUBSTATE_OPERATOR_EQU     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ASSIGN )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_GT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_GT     )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHR   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_LT      : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LT     )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BSHL   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_EXCL    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LNOT   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_AMP     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BAND   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_BAR     : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BOR    )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_CARET   : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BXOR   )); break;
-            case LCC_LX_SUBSTATE_OPERATOR_HASH    : lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STR    )); break;
+            case LCC_LX_SUBSTATE_NUMBER_OR_OP     : _lcc_commit_operator(self, LCC_OP_POINT     , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_PLUS    : _lcc_commit_operator(self, LCC_OP_PLUS      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_MINUS   : _lcc_commit_operator(self, LCC_OP_MINUS     , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_STAR    : _lcc_commit_operator(self, LCC_OP_STAR      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_SLASH   : _lcc_commit_operator(self, LCC_OP_SLASH     , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_PERCENT : _lcc_commit_operator(self, LCC_OP_PERCENT   , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_EQU     : _lcc_commit_operator(self, LCC_OP_ASSIGN    , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_GT      : _lcc_commit_operator(self, LCC_OP_GT        , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : _lcc_commit_operator(self, LCC_OP_BSHR      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_LT      : _lcc_commit_operator(self, LCC_OP_LT        , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : _lcc_commit_operator(self, LCC_OP_BSHL      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_EXCL    : _lcc_commit_operator(self, LCC_OP_LNOT      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_AMP     : _lcc_commit_operator(self, LCC_OP_BAND      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_BAR     : _lcc_commit_operator(self, LCC_OP_BOR       , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_CARET   : _lcc_commit_operator(self, LCC_OP_BXOR      , 1); break;
+            case LCC_LX_SUBSTATE_OPERATOR_HASH    : _lcc_commit_operator(self, LCC_OP_STRINGIZE , 1); break;
         }
 
         /* EOF or EOL when parsing compiler directive, commit it */
@@ -1016,17 +1150,17 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     /* assign operators */
                     switch (self->ch)
                     {
-                        case '~': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_BINV)); break;
-                        case '(': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LBRACKET)); break;
-                        case ')': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_RBRACKET)); break;
-                        case '[': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LINDEX)); break;
-                        case ']': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_RINDEX)); break;
-                        case '{': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_LBLOCK)); break;
-                        case '}': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_RBLOCK)); break;
-                        case ':': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_COLON)); break;
-                        case ',': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_COMMA)); break;
-                        case ';': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SEMICOLON)); break;
-                        case '?': lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_QUESTION)); break;
+                        case '~': _lcc_commit_operator(self, LCC_OP_BINV     , 1); break;
+                        case '(': _lcc_commit_operator(self, LCC_OP_LBRACKET , 1); break;
+                        case ')': _lcc_commit_operator(self, LCC_OP_RBRACKET , 1); break;
+                        case '[': _lcc_commit_operator(self, LCC_OP_LINDEX   , 1); break;
+                        case ']': _lcc_commit_operator(self, LCC_OP_RINDEX   , 1); break;
+                        case '{': _lcc_commit_operator(self, LCC_OP_LBLOCK   , 1); break;
+                        case '}': _lcc_commit_operator(self, LCC_OP_RBLOCK   , 1); break;
+                        case ':': _lcc_commit_operator(self, LCC_OP_COLON    , 1); break;
+                        case ',': _lcc_commit_operator(self, LCC_OP_COMMA    , 1); break;
+                        case ';': _lcc_commit_operator(self, LCC_OP_SEMICOLON, 1); break;
+                        case '?': _lcc_commit_operator(self, LCC_OP_QUESTION , 1); break;
                     }
 
 #pragma clang diagnostic pop
@@ -1116,7 +1250,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             }
 
             /* commit the identifier */
-            if (!(_lcc_commit_ident(self)))
+            if (!(_lcc_commit_ident(self, 0)))
                 return;
 
             /* keep the character */
@@ -1137,7 +1271,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                         goto _lcc_label_string_generic_char;
 
                     /* accept as strings */
-                    _lcc_commit_string(self);
+                    _lcc_commit_string(self, 1);
                     self->state = LCC_LX_STATE_ACCEPT;
                     break;
                 }
@@ -1157,7 +1291,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     }
 
                     /* accept as chars */
-                    _lcc_commit_chars(self);
+                    _lcc_commit_chars(self, 1);
                     self->state = LCC_LX_STATE_ACCEPT;
                     break;
                 }
@@ -1379,7 +1513,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    _lcc_commit_number(self, LCC_LT_FLOAT);
+                    _lcc_commit_number(self, LCC_LT_FLOAT, 1);
                     break;
                 }
 
@@ -1407,7 +1541,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     {
                         self->state = LCC_LX_STATE_ACCEPT;
                         lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                        _lcc_commit_number(self, LCC_LT_LONGDOUBLE);
+                        _lcc_commit_number(self, LCC_LT_LONGDOUBLE, 1);
                     }
                     else
                     {
@@ -1425,9 +1559,9 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     /* move to next character */
                     if (self->substate == LCC_LX_SUBSTATE_NUMBER)
-                        _lcc_commit_number(self, LCC_LT_INT);
+                        _lcc_commit_number(self, LCC_LT_INT, 0);
                     else
-                        _lcc_commit_number(self, LCC_LT_DOUBLE);
+                        _lcc_commit_number(self, LCC_LT_DOUBLE, 0);
 
                     /* accept but keep this character */
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
@@ -1495,7 +1629,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    _lcc_commit_number(self, LCC_LT_FLOAT);
+                    _lcc_commit_number(self, LCC_LT_FLOAT, 1);
                     break;
                 }
 
@@ -1522,7 +1656,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* other characters, commit a single zero */
                 default:
                 {
-                    _lcc_commit_number(self, LCC_LT_INT);
+                    _lcc_commit_number(self, LCC_LT_INT, 0);
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
                     break;
                 }
@@ -1546,7 +1680,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             if (!(isdigit(self->ch)))
             {
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_POINT));
+                _lcc_commit_operator(self, LCC_OP_POINT, 0);
                 break;
             }
 
@@ -1598,7 +1732,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     /* not a specifier */
                     default:
                     {
-                        _lcc_commit_number(self, LCC_LT_INT);
+                        _lcc_commit_number(self, LCC_LT_INT, 0);
                         self->state = LCC_LX_STATE_ACCEPT_KEEP;
                         break;
                     }
@@ -1650,7 +1784,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* other characters */
                 default:
                 {
-                    _lcc_commit_number(self, LCC_LT_INT);
+                    _lcc_commit_number(self, LCC_LT_INT, 0);
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
                     break;
                 }
@@ -1664,7 +1798,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         {
             if ((self->ch != 'l') && (self->ch != 'L'))
             {
-                _lcc_commit_number(self, LCC_LT_UINT);
+                _lcc_commit_number(self, LCC_LT_UINT, 0);
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
             }
             else
@@ -1682,14 +1816,14 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         {
             if ((self->ch != 'l') && (self->ch != 'L'))
             {
-                _lcc_commit_number(self, LCC_LT_LONG);
+                _lcc_commit_number(self, LCC_LT_LONG, 0);
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
             }
             else
             {
                 self->state = LCC_LX_STATE_ACCEPT;
                 lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                _lcc_commit_number(self, LCC_LT_LONGLONG);
+                _lcc_commit_number(self, LCC_LT_LONGLONG, 1);
             }
 
             break;
@@ -1700,14 +1834,14 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         {
             if ((self->ch != 'l') && (self->ch != 'L'))
             {
-                _lcc_commit_number(self, LCC_LT_ULONG);
+                _lcc_commit_number(self, LCC_LT_ULONG, 0);
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
             }
             else
             {
                 self->state = LCC_LX_STATE_ACCEPT;
                 lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                _lcc_commit_number(self, LCC_LT_ULONGLONG);
+                _lcc_commit_number(self, LCC_LT_ULONGLONG, 1);
             }
 
             break;
@@ -1759,7 +1893,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    _lcc_commit_number(self, LCC_LT_FLOAT);
+                    _lcc_commit_number(self, LCC_LT_FLOAT, 1);
                     break;
                 }
 
@@ -1769,7 +1903,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
                     lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                    _lcc_commit_number(self, LCC_LT_LONGDOUBLE);
+                    _lcc_commit_number(self, LCC_LT_LONGDOUBLE, 1);
                     break;
                 }
 
@@ -1785,7 +1919,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 /* other characters */
                 default:
                 {
-                    _lcc_commit_number(self, LCC_LT_DOUBLE);
+                    _lcc_commit_number(self, LCC_LT_DOUBLE, 0);
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
                     break;
                 }
@@ -1813,76 +1947,76 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
         /** very complex operator logic **/
 
-        #define ACCEPT1_OR_KEEP(expect, ac_token, keep_token)                               \
-        {                                                                                   \
-            if (self->ch == (expect))                                                       \
-            {                                                                               \
-                self->state = LCC_LX_STATE_ACCEPT;                                          \
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token));       \
-            }                                                                               \
-            else                                                                            \
-            {                                                                               \
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;                                     \
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(keep_token));     \
-            }                                                                               \
-                                                                                            \
-            break;                                                                          \
+        #define ACCEPT1_OR_KEEP(expect, ac_token, keep_token)                           \
+        {                                                                               \
+            if (self->ch == (expect))                                                   \
+            {                                                                           \
+                self->state = LCC_LX_STATE_ACCEPT;                                      \
+                _lcc_commit_operator(self, ac_token, 1);                                \
+            }                                                                           \
+            else                                                                        \
+            {                                                                           \
+                self->state = LCC_LX_STATE_ACCEPT_KEEP;                                 \
+                _lcc_commit_operator(self, keep_token, 0);                              \
+            }                                                                           \
+                                                                                        \
+            break;                                                                      \
         }
 
-        #define ACCEPT2_OR_KEEP(expect1, ac_token1, expect2, ac_token2, keep_token)         \
-        {                                                                                   \
-            switch (self->ch)                                                               \
-            {                                                                               \
-                case expect1:                                                               \
-                {                                                                           \
-                    self->state = LCC_LX_STATE_ACCEPT;                                      \
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token1));  \
-                    break;                                                                  \
-                }                                                                           \
-                                                                                            \
-                case expect2:                                                               \
-                {                                                                           \
-                    self->state = LCC_LX_STATE_ACCEPT;                                      \
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token2));  \
-                    break;                                                                  \
-                }                                                                           \
-                                                                                            \
-                default:                                                                    \
-                {                                                                           \
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                                 \
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(keep_token)); \
-                    break;                                                                  \
-                }                                                                           \
-            }                                                                               \
-                                                                                            \
-            break;                                                                          \
+        #define ACCEPT2_OR_KEEP(expect1, ac_token1, expect2, ac_token2, keep_token)     \
+        {                                                                               \
+            switch (self->ch)                                                           \
+            {                                                                           \
+                case expect1:                                                           \
+                {                                                                       \
+                    self->state = LCC_LX_STATE_ACCEPT;                                  \
+                    _lcc_commit_operator(self, ac_token1, 1);                           \
+                    break;                                                              \
+                }                                                                       \
+                                                                                        \
+                case expect2:                                                           \
+                {                                                                       \
+                    self->state = LCC_LX_STATE_ACCEPT;                                  \
+                    _lcc_commit_operator(self, ac_token2, 1);                           \
+                    break;                                                              \
+                }                                                                       \
+                                                                                        \
+                default:                                                                \
+                {                                                                       \
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                             \
+                    _lcc_commit_operator(self, keep_token, 0);                          \
+                    break;                                                              \
+                }                                                                       \
+            }                                                                           \
+                                                                                        \
+            break;                                                                      \
         }
 
-        #define SHIFT_ACCEPT_OR_KEEP(expect1, shift, expect2, ac_token, keep_token)         \
-        {                                                                                   \
-            switch (self->ch)                                                               \
-            {                                                                               \
-                case expect1:                                                               \
-                {                                                                           \
-                    self->state = LCC_LX_STATE_SHIFT;                                       \
-                    self->substate = shift;                                                 \
-                    break;                                                                  \
-                }                                                                           \
-                                                                                            \
-                case expect2:                                                               \
-                {                                                                           \
-                    self->state = LCC_LX_STATE_ACCEPT;                                      \
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(ac_token));   \
-                    break;                                                                  \
-                }                                                                           \
-                                                                                            \
-                default:                                                                    \
-                {                                                                           \
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                                 \
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(keep_token)); \
-                    break;                                                                  \
-                }                                                                           \
-            }                                                                               \
+        #define SHIFT_ACCEPT_OR_KEEP(expect1, shift, expect2, ac_token, keep_token)     \
+        {                                                                               \
+            switch (self->ch)                                                           \
+            {                                                                           \
+                case expect1:                                                           \
+                {                                                                       \
+                    self->state = LCC_LX_STATE_SHIFT;                                   \
+                    self->substate = shift;                                             \
+                    break;                                                              \
+                }                                                                       \
+                                                                                        \
+                case expect2:                                                           \
+                {                                                                       \
+                    self->state = LCC_LX_STATE_ACCEPT;                                  \
+                    _lcc_commit_operator(self, ac_token, 1);                            \
+                    break;                                                              \
+                }                                                                       \
+                                                                                        \
+                default:                                                                \
+                {                                                                       \
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                             \
+                    _lcc_commit_operator(self, keep_token, 0);                          \
+                    break;                                                              \
+                }                                                                       \
+            }                                                                           \
         }
 
         /* one- or two-character operators */
@@ -1936,7 +2070,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         {
             if (self->ch == '>')
             {
-                _lcc_commit_string(self);
+                _lcc_commit_string(self, 1);
                 self->state = LCC_LX_STATE_ACCEPT;
             }
             else
@@ -1957,7 +2091,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 case '=':
                 {
                     self->state = LCC_LX_STATE_ACCEPT;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_IDIV));
+                    _lcc_commit_operator(self, LCC_OP_IDIV, 1);
                     break;
                 }
 
@@ -1981,7 +2115,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                 default:
                 {
                     self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                    lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_SLASH));
+                    _lcc_commit_operator(self, LCC_OP_SLASH, 0);
                     break;
                 }
             }
@@ -1995,12 +2129,12 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             if (self->ch == '#')
             {
                 self->state = LCC_LX_STATE_ACCEPT;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_CONCAT));
+                _lcc_commit_operator(self, LCC_OP_CONCAT, 1);
             }
             else
             {
                 self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_STR));
+                _lcc_commit_operator(self, LCC_OP_STRINGIZE, 0);
             }
 
             break;
@@ -2018,7 +2152,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
             /* accept as ellipsis operator */
             self->state = LCC_LX_STATE_ACCEPT;
-            lcc_token_attach(&(self->tokens), lcc_token_from_operator(LCC_OP_ELLIPSIS));
+            _lcc_commit_operator(self, LCC_OP_ELLIPSIS, 1);
             break;
         }
 
@@ -2329,6 +2463,482 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
     return 0;
 }
 
+static lcc_token_t *_lcc_next_arg(lcc_token_t *begin, lcc_token_t *end)
+{
+    /* parentheses nesting level */
+    size_t level = 0;
+    lcc_token_t *last = begin;
+
+    /* find the last token of this argument */
+    while (last != end)
+    {
+        /* maybe "," "(" or ")" operator */
+        if (last->type == LCC_TK_OPERATOR)
+        {
+            /* checking for matched parentheses */
+            if ((level == 0) &&
+                ((last->operator == LCC_OP_COMMA) ||
+                 (last->operator == LCC_OP_RBRACKET)))
+                return last;
+
+            /* parentheses matching */
+            if (last->operator == LCC_OP_LBRACKET) level++;
+            if (last->operator == LCC_OP_RBRACKET) level--;
+        }
+
+        /* move to next token */
+        last = last->next;
+    }
+
+    /* encountered end of tokens, but still not found */
+    return NULL;
+}
+
+static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end)
+{
+    /* reset token pointers */
+    lcc_token_t *a;
+    lcc_token_t *b;
+    lcc_token_t *t = begin;
+
+    /* pass 2: apply concatenation */
+    while (t != end)
+    {
+        /* only care about "##" operator */
+        if ((t->type != LCC_TK_OPERATOR) ||
+            (t->operator != LCC_OP_CONCAT))
+        {
+            t = t->next;
+            continue;
+        }
+
+        /* detach the previous and next token */
+        a = lcc_token_detach(t->prev);
+        b = lcc_token_detach(t->next);
+
+        /* remove the "##" operator */
+        t = t->next;
+        lcc_token_free(t->prev);
+
+        /* both identifiers */
+        if ((a->type == LCC_TK_IDENT) &&
+            (b->type == LCC_TK_IDENT))
+        {
+            /* append with the next token */
+            lcc_string_append(a->src, b->src);
+            lcc_string_append(a->ident, b->ident);
+
+            /* attach the new token */
+            lcc_token_free(b);
+            lcc_token_attach(t, a);
+            continue;
+        }
+
+        /* both operators */
+        if ((a->type == LCC_TK_OPERATOR) &&
+            (b->type == LCC_TK_OPERATOR))
+        {
+
+#define _OP(a, b)                   (((uint32_t)a << 16u) | (uint32_t)b)
+#define _DEL(tk)                    lcc_token_free(tk)
+#define _ADD(list, tk)              lcc_token_attach(list, tk)
+#define _NEW(name, op)              lcc_token_from_operator(lcc_string_from(name), (op))
+#define _MAP(op1, op2, name, rop)   case _OP(op1, op2): { _DEL(a); _DEL(b); _ADD(t, _NEW(name, rop)); continue; }
+
+            /* switch on compond operators */
+            switch (_OP(a->operator, b->operator))
+            {
+                _MAP(LCC_OP_MINUS   , LCC_OP_GT     , "->"  , LCC_OP_DEREF  )   /* "-" ## ">" -> "->" */
+                _MAP(LCC_OP_PLUS    , LCC_OP_PLUS   , "++"  , LCC_OP_INCR   )   /* "+" ## "+" -> "++" */
+                _MAP(LCC_OP_MINUS   , LCC_OP_MINUS  , "--"  , LCC_OP_DECR   )   /* "-" ## "-" -> "--" */
+                _MAP(LCC_OP_GT      , LCC_OP_GT     , ">>"  , LCC_OP_BSHR   )   /* "<" ## "<" -> "<<" */
+                _MAP(LCC_OP_LT      , LCC_OP_LT     , "<<"  , LCC_OP_BSHL   )   /* ">" ## ">" -> ">>" */
+                _MAP(LCC_OP_BAND    , LCC_OP_BAND   , "&&"  , LCC_OP_LAND   )   /* "&" ## "&" -> "&&" */
+                _MAP(LCC_OP_BOR     , LCC_OP_BOR    , "||"  , LCC_OP_LOR    )   /* "|" ## "|" -> "||" */
+                _MAP(LCC_OP_PLUS    , LCC_OP_ASSIGN , "+="  , LCC_OP_IADD   )   /* "+" ## "=" -> "+=" */
+                _MAP(LCC_OP_MINUS   , LCC_OP_ASSIGN , "-="  , LCC_OP_ISUB   )   /* "-" ## "=" -> "-=" */
+                _MAP(LCC_OP_STAR    , LCC_OP_ASSIGN , "*="  , LCC_OP_IMUL   )   /* "*" ## "=" -> "*=" */
+                _MAP(LCC_OP_SLASH   , LCC_OP_ASSIGN , "/="  , LCC_OP_IDIV   )   /* "/" ## "=" -> "/=" */
+                _MAP(LCC_OP_PERCENT , LCC_OP_ASSIGN , "%="  , LCC_OP_IMOD   )   /* "/" ## "=" -> "/=" */
+                _MAP(LCC_OP_BAND    , LCC_OP_ASSIGN , "&="  , LCC_OP_IAND   )   /* "&" ## "=" -> "&=" */
+                _MAP(LCC_OP_BOR     , LCC_OP_ASSIGN , "|="  , LCC_OP_IOR    )   /* "|" ## "=" -> "|=" */
+                _MAP(LCC_OP_BXOR    , LCC_OP_ASSIGN , "^="  , LCC_OP_IXOR   )   /* "^" ## "=" -> "^=" */
+                _MAP(LCC_OP_GT      , LCC_OP_ASSIGN , ">="  , LCC_OP_GEQ    )   /* ">" ## "=" -> ">=" */
+                _MAP(LCC_OP_LT      , LCC_OP_ASSIGN , "<="  , LCC_OP_LEQ    )   /* "<" ## "=" -> "<=" */
+                _MAP(LCC_OP_ASSIGN  , LCC_OP_ASSIGN , "=="  , LCC_OP_EQ     )   /* "=" ## "=" -> "==" */
+                _MAP(LCC_OP_LNOT    , LCC_OP_ASSIGN , "!="  , LCC_OP_NEQ    )   /* "!" ## "=" -> "!=" */
+                _MAP(LCC_OP_LT      , LCC_OP_LEQ    , "<<=" , LCC_OP_ISHL   )   /* "<" ## "<=" -> "<<=" */
+                _MAP(LCC_OP_GT      , LCC_OP_GEQ    , ">>=" , LCC_OP_ISHR   )   /* ">" ## ">=" -> ">>=" */
+                _MAP(LCC_OP_BSHL    , LCC_OP_ASSIGN , "<<=" , LCC_OP_ISHL   )   /* "<<" ## "=" -> "<<=" */
+                _MAP(LCC_OP_BSHR    , LCC_OP_ASSIGN , ">>=" , LCC_OP_ISHR   )   /* ">>" ## "=" -> ">>=" */
+
+                /* other unknown operators */
+                default:
+                {
+                    const char *op1 = lcc_token_op_name(a->operator);
+                    const char *op2 = lcc_token_op_name(b->operator);
+                    _lcc_lexer_error(self, "\"%s%s\" is an invalid preprocessor token", op1, op2);
+                    return 0;
+                }
+            }
+
+#undef _OP
+#undef _DEL
+#undef _ADD
+#undef _NEW
+#undef _MAP
+
+        }
+
+        // TODO: there are more possible concatenations
+
+        /* otherwise it's an error, dump the token */
+        lcc_string_t *tk1 = lcc_token_as_string(a);
+        lcc_string_t *tk2 = lcc_token_as_string(b);
+
+        /* throw the error */
+        _lcc_lexer_error(self, "\"%s%s\" is an invalid preprocessor token", tk1->buf, tk2->buf);
+        lcc_string_unref(tk1);
+        lcc_string_unref(tk2);
+        return 0;
+    }
+
+    /* concatenation finished */
+    return 1;
+}
+
+static void _lcc_macro_disp(lcc_token_t **pos, lcc_token_t **next, lcc_token_t *begin, lcc_token_t *end)
+{
+    /* first token */
+    lcc_token_t *h = *pos;
+    lcc_token_t *p = begin;
+    lcc_token_t *q = h->next;
+
+    /* make a copy of each token, then attach to anchor */
+    while (p != end)
+    {
+        lcc_token_attach(q, lcc_token_copy(p));
+        p = p->next;
+    }
+
+    /* replace the old anchor */
+    *pos = h->next;
+    *next = q;
+    lcc_token_free(h);
+}
+
+static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, lcc_psym_t *sym, size_t argc, lcc_token_t **argv)
+{
+    /* substitution result */
+    ssize_t n;
+    lcc_token_t *p = sym->body->next;
+
+    /* pass 1: apply parameter substitution and stringize */
+    while (p != sym->body)
+    {
+        /* argument subtitution */
+        if ((p->type == LCC_TK_IDENT) &&
+            ((n = lcc_string_array_index(&(sym->args), p->ident)) >= 0))
+        {
+            /* special case of "<arg> ## ..." where <arg> is nothing
+             * skip the argument identifier, along with the "##" operator */
+            if ((p->next->type == LCC_TK_OPERATOR) &&
+                (p->next->operator == LCC_OP_CONCAT) &&
+                (argv[n]->next == argv[n + 1]))
+            {
+                p = p->next->next;
+                continue;
+            }
+
+            /* perform substitution */
+            for (lcc_token_t *t = argv[n]->next; t != argv[n + 1]; t = t->next)
+                lcc_token_attach(head, lcc_token_copy(t));
+
+            /* skip the token */
+            p = p->next;
+            continue;
+        }
+
+        /* variadic argument substitution */
+        if ((p->type == LCC_TK_IDENT) &&
+            (p->ident->len == sym->vaname->len) &&
+            (strcmp(p->ident->buf, sym->vaname->buf) == 0))
+        {
+            /* special case of "<varg> ## ..." where <varg> is nothing,
+             * skip the variadic argument identifier, along with the "##" operator */
+            if ((p->next->type == LCC_TK_OPERATOR) &&
+                (p->next->operator == LCC_OP_CONCAT) &&
+                ((argc <= sym->args.array.count) ||
+                 (argv[sym->args.array.count]->next == argv[argc])))
+            {
+                p = p->next->next;
+                continue;
+            }
+
+            /* attach all variadic arguments, including comma */
+            if (argc > sym->args.array.count)
+                for (lcc_token_t *t = argv[sym->args.array.count]->next; t != argv[argc]; t = t->next)
+                    lcc_token_attach(head, lcc_token_copy(t));
+
+            /* skip the token */
+            p = p->next;
+            continue;
+        }
+
+        /* special case of concatenating with empty arguments */
+        if ((p->type == LCC_TK_OPERATOR) &&                                         /* first token must be an operator */
+            (p->operator == LCC_OP_CONCAT) &&                                       /* which must be a concatenation operator */
+            (p->next->type == LCC_TK_IDENT) &&                                      /* second token must be an identifier */
+            ((((n = lcc_string_array_index(&(sym->args), p->next->ident)) >= 0) &&  /* which must be an argument name */
+              (argv[n]->next == argv[n + 1])) ||                                    /* and this argument expands to nothing */
+             ((p->next->ident->len == sym->vaname->len) &&                          /* or the length of this name equals to varg name */
+              (strcmp(p->next->ident->buf, sym->vaname->buf) == 0) &&               /* so does the characters */
+              ((argc <= sym->args.array.count) ||                                   /* and we don't have excess arguments to deal with */
+               (argv[sym->args.array.count]->next == argv[argc])))))                /* or we just have an empty variadic list */
+        {
+            p = p->next->next;
+            continue;
+        }
+
+        /* special case of ", ## <vargs>" */
+        if ((p->type == LCC_TK_OPERATOR) &&                                 /* first token must be an operator */
+            (p->operator == LCC_OP_COMMA) &&                                /* which must be "," operator */
+            (p->next->type == LCC_TK_OPERATOR) &&                           /* second token must also be an operator */
+            (p->next->operator == LCC_OP_CONCAT) &&                         /* which must be "##" operator */
+            (p->next->next->type == LCC_TK_IDENT) &&                        /* third token must be an identifier */
+            (p->next->next->ident->len == sym->vaname->len) &&              /* which must have the same length */
+            (strcmp(p->next->next->ident->buf, sym->vaname->buf) == 0))     /* and same characters with variadic argument name */
+        {
+            /* remove the "," if <vargs> is empty */
+            if (argc == sym->args.array.count)
+            {
+                p = p->next->next->next;
+                continue;
+            }
+            else
+            {
+                lcc_token_attach(head, lcc_token_copy(p));
+                p = p->next->next;
+                continue;
+            }
+        }
+
+        /* apply stringnize */
+        if ((p->type == LCC_TK_OPERATOR) &&
+            (p->operator == LCC_OP_STRINGIZE))
+        {
+            /* must be an argument after "#" */
+            if ((p->next->type != LCC_TK_IDENT) ||
+                ((n = lcc_string_array_index(&(sym->args), p->next->ident)) < 0))
+            {
+                _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
+                return 0;
+            }
+
+            /* create a new string */
+            lcc_token_t *t = argv[n]->next;
+            lcc_string_t *v = lcc_string_new(0);
+            lcc_string_t *s;
+
+            /* concat each part of token strings */
+            while (t != argv[n + 1])
+            {
+                lcc_string_append(v, t->src);
+                t = t->next;
+            }
+
+            /* remove whitespaces */
+            s = v;
+            v = lcc_string_trim(s);
+            lcc_string_unref(s);
+
+            /* skip to next token, and add a new token */
+            p = p->next->next;
+            lcc_token_attach(head, lcc_token_from_raw(v, lcc_string_ref(v)));
+            continue;
+        }
+
+        /* copy directly */
+        lcc_token_attach(head, lcc_token_copy(p));
+        p = p->next;
+    }
+
+    /* pass 2: handle concatenation */
+    return _lcc_macro_cat(self, head->next, head);
+}
+
+static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end)
+{
+    /* first token */
+    lcc_psym_t *sym;
+    lcc_token_t *next;
+    lcc_token_t *token = begin;
+
+    /* scan every token */
+    while (token != end)
+    {
+        /* must be a valid macro name, otherwise ignore it */
+        if ((token->type != LCC_TK_IDENT) ||
+            !(lcc_map_get(&(self->psyms), token->ident, (void **)&sym)))
+        {
+            token = token->next;
+            continue;
+        }
+
+        /* object-like macro */
+        if (sym->flags & LCC_LXDF_DEFINE_O)
+        {
+            /* self-ref macros */
+            if (token->ref || (sym->flags & LCC_LXDF_DEFINE_USING))
+            {
+                token->ref = 1;
+                token = token->next;
+                continue;
+            }
+
+            /* replace the name */
+            _lcc_macro_disp(
+                &token,
+                &next,
+                sym->body->next,
+                sym->body
+            );
+
+            /* handle concatenation */
+            if (!(_lcc_macro_cat(self, token, next)))
+                return;
+        }
+        else
+        {
+            /* function-like macro, must follows a "(" operator */
+            if ((token->next->type != LCC_TK_OPERATOR) ||
+                (token->next->operator != LCC_OP_LBRACKET))
+            {
+                token = token->next;
+                continue;
+            }
+
+            /* argument begin */
+            lcc_token_t *head;
+            lcc_token_t *start = token;
+
+            /* skip the "(" operator */
+            for (int i = 0; i < 2; i++)
+            {
+                /* check for EOF */
+                if ((start = start->next) == end)
+                {
+                    _lcc_lexer_error(self, "Unterminated function-like macro invocation");
+                    return;
+                }
+            }
+
+            /* formal argument pointers */
+            size_t argp = 0;
+            size_t argcap = sym->args.array.count + 1;
+
+            /* argument buffer */
+            lcc_token_t *delim;
+            lcc_token_t **argvp = malloc(argcap * sizeof(lcc_token_t *));
+
+            /* make a stub delimiter */
+            argvp[0] = token->next;
+            memset(argvp + 1, 0, (argcap - 1) * sizeof(lcc_token_t *));
+
+            /* macro pre-scan */
+            do
+            {
+                /* find next end of argument */
+                if (!(delim = _lcc_next_arg(start, end)))
+                {
+                    free(argvp);
+                    _lcc_lexer_error(self, "Unterminated function-like macro invocation");
+                    return;
+                }
+
+                /* expand argument buffer as needed */
+                if (argp >= argcap - 1)
+                {
+                    argcap *= 2;
+                    argvp = realloc(argvp, argcap * sizeof(lcc_token_t *));
+                }
+
+                /* expand as needed */
+                if (!(start->ref) &&                                /* must not be self-ref macro */
+                    !(sym->flags & LCC_LXDF_DEFINE_USING) &&        /* must not be recursive-ref macro */
+                    ((argp >= sym->args.array.count) ||             /* could be an argument in variadic arguments */
+                     !(sym->nx[argp / 64] & (1 << (argp % 64)))))   /* or "not-expand" bit not set for this argument */
+                    _lcc_macro_subst(self, start, delim);
+
+                /* skip the comma */
+                start = delim->next;
+                argvp[++argp] = delim;
+
+            /* until encounter ")" */
+            } while ((delim->type != LCC_TK_OPERATOR) ||
+                     (delim->operator != LCC_OP_RBRACKET));
+
+            /* no arguments when calling empty function-like macros */
+            if ((argp == 1) &&
+                (argvp[0]->next == argvp[1]) &&
+                (sym->args.array.count == 0))
+                argp = 0;
+
+            /* not enough arguments */
+            if (argp < sym->args.array.count)
+            {
+                free(argvp);
+                _lcc_lexer_error(self, "Too few arguments provided to function-like macro invocation");
+                return;
+            }
+
+            /* too many arguments */
+            if ((argp > sym->args.array.count) &&
+                !(sym->flags & LCC_LXDF_DEFINE_VAR))
+            {
+                free(argvp);
+                _lcc_lexer_error(self, "Too many arguments provided to function-like macro invocation");
+                return;
+            }
+
+            /* don't expand self-ref macros */
+            if (token->ref || (sym->flags & LCC_LXDF_DEFINE_USING))
+            {
+                free(argvp);
+                token->ref = 1;
+                token = delim->next;
+                continue;
+            }
+
+            /* perform function-like macro expansion */
+            if (!(_lcc_macro_func(self, (head = lcc_token_new()), sym, argp, argvp)))
+            {
+                free(argvp);
+                lcc_token_clear(head);
+                return;
+            }
+
+            /* out with the original tokens */
+            while (token->next != delim)
+                lcc_token_free(token->next);
+
+            /* in with the substitution */
+            lcc_token_free(delim);
+            _lcc_macro_disp(&token, &next, head->next, head);
+
+            /* release bitmap and endpoint pointers */
+            free(argvp);
+            lcc_token_clear(head);
+        }
+
+        /* scan again for nested macros */
+        sym->flags |= LCC_LXDF_DEFINE_USING;
+        _lcc_macro_subst(self, token, next);
+        sym->flags &= ~LCC_LXDF_DEFINE_USING;
+        token = next;
+    }
+}
+
 static void _lcc_handle_define(lcc_lexer_t *self)
 {
     /* directive name not yet set */
@@ -2354,6 +2964,7 @@ static void _lcc_handle_define(lcc_lexer_t *self)
         self->flags |= LCC_LXDF_DEFINE_NS;
         self->defstate = LCC_LX_DEFSTATE_INIT;
         self->macro_name = lcc_string_ref(self->tokens.next->ident);
+        self->macro_vaname = lcc_string_from("__VA_ARGS__");
 
         /* remove the identifier from tokens */
         lcc_token_free(self->tokens.next);
@@ -2387,6 +2998,21 @@ static void _lcc_handle_define(lcc_lexer_t *self)
                 /* named argument */
                 case LCC_TK_IDENT:
                 {
+                    /* can have at most 65536 macro arguments */
+                    if (self->macro_args.array.count >= 65536)
+                    {
+                        _lcc_lexer_error(self, "Too many macro arguments");
+                        return;
+                    }
+
+                    /* check for existing names */
+                    if (lcc_string_array_index(&(self->macro_args), self->tokens.next->ident) >= 0)
+                    {
+                        _lcc_lexer_error(self, "Duplicated macro argument: %s", self->tokens.next->ident->buf);
+                        return;
+                    }
+
+                    /* move to next state */
                     self->defstate = LCC_LX_DEFSTATE_DELIM_OR_END;
                     lcc_string_array_append(&(self->macro_args), lcc_string_ref(self->tokens.next->ident));
                     break;
@@ -2395,7 +3021,14 @@ static void _lcc_handle_define(lcc_lexer_t *self)
                 /* maybe variadic specifier */
                 case LCC_TK_OPERATOR:
                 {
-                    /* can only be ellipsis */
+                    /* maybe a macro with no arguments */
+                    if (self->tokens.next->operator == LCC_OP_RBRACKET)
+                    {
+                        self->flags |= LCC_LXDF_DEFINE_FINE;
+                        break;
+                    }
+
+                    /* otherwise can only be ellipsis */
                     if (self->tokens.next->operator != LCC_OP_ELLIPSIS)
                     {
                         _lcc_lexer_error(self, "Identifier or '...' expected");
@@ -2427,7 +3060,7 @@ static void _lcc_handle_define(lcc_lexer_t *self)
             /* either way, it must be an operator */
             if (self->tokens.next->type != LCC_TK_OPERATOR)
             {
-                _lcc_lexer_error(self, "',' or ')' expected");
+                _lcc_lexer_error(self, "')', ',' or '...' expected");
                 return;
             }
 
@@ -2448,10 +3081,24 @@ static void _lcc_handle_define(lcc_lexer_t *self)
                     break;
                 }
 
+                /* named variadic arguments */
+                case LCC_OP_ELLIPSIS:
+                {
+                    /* replace the variadic argument name */
+                    lcc_string_unref(self->macro_vaname);
+                    self->macro_vaname = lcc_string_array_pop(&(self->macro_args));
+
+                    /* cannot have more arguments */
+                    self->flags |= LCC_LXDF_DEFINE_VAR;
+                    self->flags |= LCC_LXDF_DEFINE_NVAR;
+                    self->defstate = LCC_LX_DEFSTATE_END;
+                    break;
+                }
+
                 /* otherwise it's an error */
                 default:
                 {
-                    _lcc_lexer_error(self, "',' or ')' expected");
+                    _lcc_lexer_error(self, "')', ',' or '...' expected");
                     return;
                 }
             }
@@ -2512,8 +3159,10 @@ static void _lcc_handle_directive(lcc_lexer_t *self)
         case LCC_LXDN_NULL:
         case LCC_LXDN_INCLUDE:
         case LCC_LXDN_UNDEF:
+        case LCC_LXDN_IF:
         case LCC_LXDN_IFDEF:
         case LCC_LXDN_IFNDEF:
+        case LCC_LXDN_ELIF:
         case LCC_LXDN_ELSE:
         case LCC_LXDN_ENDIF:
         case LCC_LXDN_PRAGMA:
@@ -2527,14 +3176,6 @@ static void _lcc_handle_directive(lcc_lexer_t *self)
         case LCC_LXDN_DEFINE:
         {
             _lcc_handle_define(self);
-            break;
-        }
-
-        /* "#if" and "#elif" directive */
-        case LCC_LXDN_IF:
-        case LCC_LXDN_ELIF:
-        {
-            // TODO: evaluate `if` condition
             break;
         }
 
@@ -2586,13 +3227,19 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 return;
             }
 
+            /* not-expand (NX) bits (at most 65536 arguments) */
+            ssize_t n;
+            lcc_psym_t psym;
+            lcc_token_t *token = self->tokens.next;
+
             /* create a new symbol */
-            _lcc_psym_t psym = {
-                .body = lcc_token_new(),
-                .name = self->macro_name,
-                .args = self->macro_args,
-                .flags = self->flags,
-            };
+            lcc_psym_init(
+                &psym,
+                self->macro_name,
+                &(self->macro_args),
+                self->flags,
+                self->macro_vaname
+            );
 
             /* move everything remaining to macro body */
             if (self->tokens.next != &(self->tokens))
@@ -2603,6 +3250,56 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 self->tokens.next->prev = psym.body;
                 self->tokens.prev = &(self->tokens);
                 self->tokens.next = &(self->tokens);
+            }
+
+            /* search for arguments that don't need expansion */
+            while (token != psym.body)
+            {
+                /* special operators */
+                if (token->type == LCC_TK_OPERATOR)
+                {
+                    /* mark identifier after "#" as not-expand (NX) */
+                    if (token->operator == LCC_OP_STRINGIZE)
+                    {
+                        /* must be an argument after "#" */
+                        if ((token->next->type != LCC_TK_IDENT) ||
+                            ((n = lcc_string_array_index(&(psym.args), token->next->ident)) < 0))
+                        {
+                            lcc_psym_free(&psym);
+                            _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
+                            return;
+                        }
+
+                        /* mark as not-expand */
+                        psym.nx[n / 64] |= (1 << (n % 64));
+                    }
+
+                    /* mark identifier before and after "##" as not-expand (NX) */
+                    else if (token->operator == LCC_OP_CONCAT)
+                    {
+                        /* can't be placed in either side */
+                        if ((token->prev == psym.body) ||
+                            (token->next == psym.body))
+                        {
+                            lcc_psym_free(&psym);
+                            _lcc_lexer_error(self, "'##' cannot appear at either side of macro expansion");
+                            return;
+                        }
+
+                        /* before "##" */
+                        if ((token->prev->type == LCC_TK_IDENT) &&
+                            ((n = lcc_string_array_index(&(psym.args), token->prev->ident)) >= 0))
+                            psym.nx[n / 64] |= (1 << (n % 64));
+
+                        /* after "##" */
+                        if ((token->next->type == LCC_TK_IDENT) &&
+                            ((n = lcc_string_array_index(&(psym.args), token->next->ident)) >= 0))
+                            psym.nx[n / 64] |= (1 << (n % 64));
+                    }
+                }
+
+                /* move to next token */
+                token = token->next;
             }
 
             /* add to predefined symbols */
@@ -2800,20 +3497,42 @@ static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
     return 1;
 }
 
-static void _lcc_psym_dtor(struct _lcc_map_t *self, void *value, void *data)
+static void _lcc_psym_dtor(lcc_map_t *self, void *value, void *data)
 {
-    /* get the symbol */
-    _lcc_psym_t *sym = value;
-    lcc_token_t *head = sym->body;
+    lcc_psym_t *sym = value;
+    lcc_psym_free(sym);
+}
 
-    /* destroy all tokens */
-    while (head->next != head)
-        lcc_token_free(head->next);
+static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
+{
+    lcc_file_t *fp = item;
+    lcc_string_unref(fp->name);
+    lcc_string_array_free(&(fp->lines));
+}
 
-    /* clear macro name and arguments */
-    free(sym->body);
-    lcc_string_unref(sym->name);
-    lcc_string_array_free(&(sym->args));
+void lcc_psym_free(lcc_psym_t *self)
+{
+    free(self->nx);
+    lcc_token_clear(self->body);
+    lcc_string_unref(self->name);
+    lcc_string_unref(self->vaname);
+    lcc_string_array_free(&(self->args));
+}
+
+void lcc_psym_init(
+    lcc_psym_t *self,
+    lcc_string_t *name,
+    lcc_string_array_t *args,
+    long flags,
+    lcc_string_t *vaname)
+{
+    self->nx = calloc(1024, sizeof(uint64_t));
+    self->body = lcc_token_new();
+    self->name = name;
+    self->args = *args;
+    self->flags = flags;
+    self->vaname = vaname;
+    memset(args, 0, sizeof(lcc_string_array_t));
 }
 
 void lcc_lexer_free(lcc_lexer_t *self)
@@ -2832,6 +3551,7 @@ void lcc_lexer_free(lcc_lexer_t *self)
 
     /* clear other tables */
     lcc_array_free(&(self->files));
+    lcc_string_unref(self->source);
     lcc_token_buffer_free(&(self->token_buffer));
     lcc_string_array_free(&(self->include_paths));
     lcc_string_array_free(&(self->library_paths));
@@ -2852,8 +3572,8 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
         .lines = LCC_STRING_ARRAY_STATIC_INIT,
     };
 
-    /* initial source file */
-    lcc_map_init(&(self->psyms), sizeof(_lcc_psym_t), _lcc_psym_dtor, NULL);
+    /* complex structures */
+    lcc_map_init(&(self->psyms), sizeof(lcc_psym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
 
     /* token list and token buffer */
@@ -2873,6 +3593,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     self->col = 0;
     self->row = 0;
     self->fname = lcc_string_ref(psrc.name);
+    self->source = lcc_string_new(0);
 
     /* initial lexer state */
     self->ch = 0;
@@ -2978,9 +3699,9 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                     lcc_string_unref(self->fname);
 
                 /* save the current file info */
-                self->col = self->file->col;
-                self->row = self->file->row;
-                self->fname = lcc_string_ref(self->file->name);
+                self->col = file->col;
+                self->row = file->row;
+                self->fname = lcc_string_ref(file->name);
 
                 /* check current character */
                 if (self->ch != '\\')
@@ -3013,6 +3734,13 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             /* pop file from file stack */
             case LCC_LX_STATE_POP_FILE:
             {
+                /* check for substitution status */
+                if (self->flags & LCC_LXF_SUBST)
+                {
+                    _lcc_lexer_error(self, "Unterminated function-like macro invocation");
+                    break;
+                }
+
                 /* check for EOS (End-Of-Source) */
                 if (self->flags & LCC_LXF_EOS)
                 {
@@ -3050,6 +3778,7 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             {
                 /* set EOL flags to flush the preprocessor */
                 self->flags |= LCC_LXF_EOL;
+                lcc_string_append_from(self->source, "\n");
                 _lcc_handle_substate(self);
 
                 /* move to next line */
@@ -3081,6 +3810,10 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                     else
                         self->flags |= LCC_LXDF_DEFINE_O;
                 }
+
+                /* append last character if not EOF or EOL */
+                if (!(self->flags & (LCC_LXF_EOF | LCC_LXF_EOL)))
+                    lcc_string_append_from_size(self->source, &(self->ch), 1);
 
                 /* handle all sub-states */
                 self->flags &= ~LCC_LXF_EOF;
@@ -3136,6 +3869,71 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                 /* nothing to accept, equivalent to SHIFT or GOT_CHAR */
                 if (self->tokens.next == &(self->tokens))
                     break;
+
+                /* get the newly accepted token */
+                lcc_psym_t *sym;
+                lcc_token_t *token = self->tokens.prev;
+
+                /* check for macro substitution */
+                if (!(self->flags & LCC_LXF_SUBST) &&                               /* not substituting */
+                     (token->type == LCC_TK_IDENT) &&                               /* is a valid identifier */
+                     (lcc_map_get(&(self->psyms), token->ident, (void **)&sym)))    /* which is also a macro name */
+                {
+                    /* function-like macro, expect a "(" operator */
+                    if (sym->flags & LCC_LXDF_DEFINE_F)
+                    {
+                        self->flags |= LCC_LXF_SUBST;
+                        self->subst_level = 0;
+                        break;
+                    }
+
+                    /* object-like macros */
+                    self->flags &= ~LCC_LXF_SUBST;
+                    _lcc_macro_subst(self, self->tokens.next, &(self->tokens));
+
+                    /* check substitution status */
+                    if (self->state == LCC_LX_STATE_REJECT)
+                        break;
+                    else
+                        return &(self->tokens);
+                }
+
+                /* still not substiting */
+                if (!(self->flags & LCC_LXF_SUBST))
+                    return &(self->tokens);
+
+                /* looking for the first bracket */
+                if (!(self->subst_level) &&
+                    !((token->type == LCC_TK_OPERATOR) &&
+                      (token->operator == LCC_OP_LBRACKET)))
+                {
+                    self->flags &= ~LCC_LXF_SUBST;
+                    return &(self->tokens);
+                }
+
+                /* not an operator, just append to token chain */
+                if (token->type != LCC_TK_OPERATOR)
+                    break;
+
+                /* "(" operator */
+                if (token->operator == LCC_OP_LBRACKET)
+                    self->subst_level++;
+
+                /* ")" operator */
+                if (token->operator == LCC_OP_RBRACKET)
+                    self->subst_level--;
+
+                /* still in macro invocation */
+                if (self->subst_level)
+                    break;
+
+                /* perform the substitution */
+                self->flags &= ~LCC_LXF_SUBST;
+                _lcc_macro_subst(self, self->tokens.next, &(self->tokens));
+
+                /* check substitution status */
+                if (self->state == LCC_LX_STATE_REJECT)
+                    break;
                 else
                     return &(self->tokens);
             }
@@ -3150,10 +3948,7 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
 
             /* end of lexing, emit an EOF token */
             case LCC_LX_STATE_END:
-            {
-                lcc_token_attach(&(self->tokens), lcc_token_new());
                 return &(self->tokens);
-            }
         }
     }
 }

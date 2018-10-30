@@ -1,3 +1,4 @@
+#include <string.h>
 #include "lcc_string_array.h"
 
 static void _lcc_string_dtor(lcc_array_t *self, void *item, void *data)
@@ -38,6 +39,18 @@ void lcc_string_array_append(lcc_string_array_t *self, lcc_string_t *str)
 {
     /* data is the string pointer */
     lcc_array_append(&(self->array), &str);
+}
+
+ssize_t lcc_string_array_index(lcc_string_array_t *self, lcc_string_t *str)
+{
+    /* compare each item */
+    for (size_t i = 0; i < self->array.count; i++)
+        if ((lcc_string_array_get(self, i)->len == str->len) &&
+            !(strncmp(lcc_string_array_get(self, i)->buf, str->buf, str->len)))
+            return i;
+
+    /* not found */
+    return -1;
 }
 
 lcc_string_t *lcc_string_array_top(lcc_string_array_t *self)

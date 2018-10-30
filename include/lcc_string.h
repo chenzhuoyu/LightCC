@@ -14,6 +14,8 @@ typedef struct _lcc_string_t
 void lcc_string_unref(lcc_string_t *self);
 lcc_string_t *lcc_string_ref(lcc_string_t *self);
 lcc_string_t *lcc_string_copy(lcc_string_t *self);
+lcc_string_t *lcc_string_trim(lcc_string_t *self);
+lcc_string_t *lcc_string_repr(lcc_string_t *self, char is_chars);
 
 lcc_string_t *lcc_string_new(size_t size);
 lcc_string_t *lcc_string_from(const char *s);

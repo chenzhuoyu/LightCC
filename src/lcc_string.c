@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,88 @@ lcc_string_t *lcc_string_copy(lcc_string_t *self)
     new->buf[new->len] = 0;
     memcpy(new->buf, self->buf, self->len);
     return new;
+}
+
+lcc_string_t *lcc_string_trim(lcc_string_t *self)
+{
+    /* string pointers */
+    size_t n = self->len;
+    const char *p = self->buf;
+
+    /* trim right */
+    while (n && isspace(p[n - 1]))
+        n--;
+
+    /* trim left */
+    while (n && isspace(*p))
+    {
+        p++;
+        n--;
+    }
+
+    /* build a new string */
+    return lcc_string_from_buffer(p, n);
+}
+
+lcc_string_t *lcc_string_repr(lcc_string_t *self, char is_chars)
+{
+    /* hexadecimal encoding table */
+    size_t n = self->len;
+    const char *p = self->buf;
+    static const char HexTable[] = "0123456789abcdef";
+
+    /* quote character and result string */
+    char quote = (char)(is_chars ? '\'' : '\"');
+    lcc_string_t *result = lcc_string_from(is_chars ? "\'" : "\"");
+
+    /* check for each character */
+    while (n--)
+    {
+        /* move t next character */
+        char ch = *p++;
+
+        /* check for quote character */
+        if (ch == quote)
+        {
+            lcc_string_append_from_format(result, "\\%c", ch);
+            continue;
+        }
+
+        /* other characters */
+        switch (ch)
+        {
+            /* control characters */
+            case '\t': lcc_string_append_from(result, "\\t"); break;
+            case '\n': lcc_string_append_from(result, "\\n"); break;
+            case '\r': lcc_string_append_from(result, "\\r"); break;
+            case '\a': lcc_string_append_from(result, "\\a"); break;
+            case '\b': lcc_string_append_from(result, "\\b"); break;
+            case '\f': lcc_string_append_from(result, "\\f"); break;
+            case '\v': lcc_string_append_from(result, "\\v"); break;
+            case '\\': lcc_string_append_from(result, "\\\\"); break;
+
+            /* normal character */
+            default:
+            {
+                /* check for printable characters */
+                if ((ch >= ' ') && (ch < 0x7f))
+                {
+                    lcc_string_append_from_size(result, &ch, 1);
+                    break;
+                }
+
+                /* non-printable characters */
+                lcc_string_append_from(result, "\\x");
+                lcc_string_append_from_size(result, &(HexTable[(ch & 0xf0) >> 4]), 1);
+                lcc_string_append_from_size(result, &(HexTable[(ch & 0x0f) >> 0]), 1);
+                break;
+            }
+        }
+    }
+
+    /* add the final quote */
+    lcc_string_append_from_size(result, &quote, 1);
+    return result;
 }
 
 lcc_string_t *lcc_string_new(size_t size)
