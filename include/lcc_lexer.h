@@ -18,7 +18,7 @@ typedef enum _lcc_keyword_t
     LCC_KW_BREAK,           /* break        */
     LCC_KW_CASE,            /* case         */
     LCC_KW_CHAR,            /* char         */
-    LCC_KW_COMPLEX,         /* Complex      */
+    LCC_KW_COMPLEX,         /* _Complex     */
     LCC_KW_CONST,           /* const        */
     LCC_KW_CONTINUE,        /* continue     */
     LCC_KW_DEFAULT,         /* default      */

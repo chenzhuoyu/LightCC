@@ -719,11 +719,58 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
+typedef struct __lcc_keyword_item_t
+{
+    const char *name;
+    lcc_keyword_t keyword;
+} _lcc_keyword_item_t;
+
 typedef struct __lcc_directive_bits_t
 {
     long bits;
     const char *name;
 } _lcc_directive_bits_t;
+
+static const _lcc_keyword_item_t KEYWORDS[] = {
+    { "auto"       , LCC_KW_AUTO      },
+    { "_Bool"      , LCC_KW_BOOL      },
+    { "break"      , LCC_KW_BREAK     },
+    { "case"       , LCC_KW_CASE      },
+    { "char"       , LCC_KW_CHAR      },
+    { "_Complex"   , LCC_KW_COMPLEX   },
+    { "const"      , LCC_KW_CONST     },
+    { "continue"   , LCC_KW_CONTINUE  },
+    { "default"    , LCC_KW_DEFAULT   },
+    { "do"         , LCC_KW_DO        },
+    { "double"     , LCC_KW_DOUBLE    },
+    { "else"       , LCC_KW_ELSE      },
+    { "enum"       , LCC_KW_ENUM      },
+    { "extern"     , LCC_KW_EXTERN    },
+    { "float"      , LCC_KW_FLOAT     },
+    { "for"        , LCC_KW_FOR       },
+    { "goto"       , LCC_KW_GOTO      },
+    { "if"         , LCC_KW_IF        },
+    { "_Imaginary" , LCC_KW_IMAGINARY },
+    { "inline"     , LCC_KW_INLINE    },
+    { "int"        , LCC_KW_INT       },
+    { "long"       , LCC_KW_LONG      },
+    { "register"   , LCC_KW_REGISTER  },
+    { "restrict"   , LCC_KW_RESTRICT  },
+    { "return"     , LCC_KW_RETURN    },
+    { "short"      , LCC_KW_SHORT     },
+    { "signed"     , LCC_KW_SIGNED    },
+    { "sizeof"     , LCC_KW_SIZEOF    },
+    { "static"     , LCC_KW_STATIC    },
+    { "struct"     , LCC_KW_STRUCT    },
+    { "switch"     , LCC_KW_SWITCH    },
+    { "typedef"    , LCC_KW_TYPEDEF   },
+    { "union"      , LCC_KW_UNION     },
+    { "unsigned"   , LCC_KW_UNSIGNED  },
+    { "void"       , LCC_KW_VOID      },
+    { "volatile"   , LCC_KW_VOLATILE  },
+    { "while"      , LCC_KW_WHILE     },
+    { NULL }
+};
 
 static const _lcc_directive_bits_t DIRECTIVES[] = {
     { LCC_LXDN_INCLUDE      , "include"         },
@@ -742,7 +789,7 @@ static const _lcc_directive_bits_t DIRECTIVES[] = {
     { LCC_LXDN_WARNING      , "warning"         },
     { LCC_LXDN_LINE         , "line"            },
     { LCC_LXDN_SCCS         , "sccs"            },
-    { 0                     , NULL              },
+    { 0 },
 };
 
 static void _lcc_lexer_error(lcc_lexer_t *self, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -872,11 +919,26 @@ static inline char _lcc_commit_ident(lcc_lexer_t *self, char keep_tail)
         return 0;
     }
 
+    /* keyword index */
+    ssize_t id = -1;
+    lcc_token_t *token;
+    lcc_string_t *source = _lcc_swap_source(self, keep_tail);
+
+    /* search for keyworkds */
+    for (size_t i = 0; KEYWORDS[i].name; i++)
+    {
+        if (!(strcmp(KEYWORDS[i].name, self->token_buffer.buf)))
+        {
+            id = i;
+            break;
+        }
+    }
+
     /* create a new token */
-    lcc_token_t *token = lcc_token_from_ident(
-        _lcc_swap_source(self, keep_tail),
-        _lcc_dump_token(self)
-    );
+    if (id < 0)
+        token = lcc_token_from_ident(source, _lcc_dump_token(self));
+    else
+        token = lcc_token_from_keyword(source, KEYWORDS[id].keyword);
 
     /* attach to token chain */
     lcc_token_attach(&(self->tokens), token);
@@ -2534,6 +2596,26 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
             continue;
         }
 
+        /* identifier with integer */
+        if ((a->type == LCC_TK_IDENT) &&
+            (b->type == LCC_TK_LITERAL) &&
+            ((b->literal.type == LCC_LT_INT) ||
+             (b->literal.type == LCC_LT_LONG) ||
+             (b->literal.type == LCC_LT_LONGLONG) ||
+             (b->literal.type == LCC_LT_UINT ||
+             (b->literal.type == LCC_LT_ULONG) ||
+             (b->literal.type == LCC_LT_ULONGLONG))))
+        {
+            /* append with the next token */
+            lcc_string_append(a->src, b->src);
+            lcc_string_append(a->ident, b->literal.raw);
+
+            /* attach the new token */
+            lcc_token_free(b);
+            lcc_token_attach(t, a);
+            continue;
+        }
+
         /* both operators */
         if ((a->type == LCC_TK_OPERATOR) &&
             (b->type == LCC_TK_OPERATOR))
@@ -2662,7 +2744,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, lcc_psym_t *sy
         /* variadic argument substitution */
         if ((p->type == LCC_TK_IDENT) &&
             (p->ident->len == sym->vaname->len) &&
-            (strcmp(p->ident->buf, sym->vaname->buf) == 0))
+            !(strcmp(p->ident->buf, sym->vaname->buf)))
         {
             /* special case of "<varg> ## ..." where <varg> is nothing,
              * skip the variadic argument identifier, along with the "##" operator */
@@ -2692,7 +2774,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, lcc_psym_t *sy
             ((((n = lcc_string_array_index(&(sym->args), p->next->ident)) >= 0) &&  /* which must be an argument name */
               (argv[n]->next == argv[n + 1])) ||                                    /* and this argument expands to nothing */
              ((p->next->ident->len == sym->vaname->len) &&                          /* or the length of this name equals to varg name */
-              (strcmp(p->next->ident->buf, sym->vaname->buf) == 0) &&               /* so does the characters */
+              !(strcmp(p->next->ident->buf, sym->vaname->buf)) &&                   /* so does the characters */
               ((argc <= sym->args.array.count) ||                                   /* and we don't have excess arguments to deal with */
                (argv[sym->args.array.count]->next == argv[argc])))))                /* or we just have an empty variadic list */
         {
@@ -2701,13 +2783,13 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, lcc_psym_t *sy
         }
 
         /* special case of ", ## <vargs>" */
-        if ((p->type == LCC_TK_OPERATOR) &&                                 /* first token must be an operator */
-            (p->operator == LCC_OP_COMMA) &&                                /* which must be "," operator */
-            (p->next->type == LCC_TK_OPERATOR) &&                           /* second token must also be an operator */
-            (p->next->operator == LCC_OP_CONCAT) &&                         /* which must be "##" operator */
-            (p->next->next->type == LCC_TK_IDENT) &&                        /* third token must be an identifier */
-            (p->next->next->ident->len == sym->vaname->len) &&              /* which must have the same length */
-            (strcmp(p->next->next->ident->buf, sym->vaname->buf) == 0))     /* and same characters with variadic argument name */
+        if ((p->type == LCC_TK_OPERATOR) &&                             /* first token must be an operator */
+            (p->operator == LCC_OP_COMMA) &&                            /* which must be "," operator */
+            (p->next->type == LCC_TK_OPERATOR) &&                       /* second token must also be an operator */
+            (p->next->operator == LCC_OP_CONCAT) &&                     /* which must be "##" operator */
+            (p->next->next->type == LCC_TK_IDENT) &&                    /* third token must be an identifier */
+            (p->next->next->ident->len == sym->vaname->len) &&          /* which must have the same length */
+            !(strcmp(p->next->next->ident->buf, sym->vaname->buf)))     /* and same characters with variadic argument name */
         {
             /* remove the "," if <vargs> is empty */
             if (argc == sym->args.array.count)

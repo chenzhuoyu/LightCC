@@ -14,7 +14,7 @@ int main()
 
     while ((token = lcc_lexer_next(&lexer)) && (token->type != LCC_TK_EOF))
     {
-        lcc_string_t *s = lcc_token_as_string(token);
+        lcc_string_t *s = lcc_token_to_string(token);
         printf("%s ", s->buf);
         lcc_string_unref(s);
         lcc_token_free(token);
