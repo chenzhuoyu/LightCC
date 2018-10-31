@@ -620,7 +620,10 @@ lcc_file_t lcc_file_from_file(const char *fname, FILE *fp)
             line[--linelen] = 0;
 
         /* append to line buffer */
-        lcc_string_array_append(&(result.lines), lcc_string_from_buffer(line, (size_t) linelen));
+        lcc_string_array_append(
+            &(result.lines),
+            lcc_string_from_buffer(line, (size_t)linelen)
+        );
     }
 
     /* check for errors */
