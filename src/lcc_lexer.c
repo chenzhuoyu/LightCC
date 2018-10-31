@@ -2582,7 +2582,7 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
         t = t->next;
         lcc_token_free(t->prev);
 
-        /* both identifiers */
+        /* both identifiers, may form a keyword */
         if ((a->type == LCC_TK_IDENT) &&
             (b->type == LCC_TK_IDENT))
         {
@@ -2590,25 +2590,135 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
             lcc_string_append(a->src, b->src);
             lcc_string_append(a->ident, b->ident);
 
+            /* search for keyworkds */
+            for (size_t i = 0; KEYWORDS[i].name; i++)
+            {
+                /* convert to keywords as needed */
+                if (!(strcmp(KEYWORDS[i].name, a->ident->buf)))
+                {
+                    lcc_string_unref(a->ident);
+                    a->type = LCC_TK_KEYWORD;
+                    a->keyword = KEYWORDS[i].keyword;
+                    break;
+                }
+            }
+
             /* attach the new token */
             lcc_token_free(b);
             lcc_token_attach(t, a);
             continue;
         }
 
-        /* identifier with integer */
+        /* identifier with integer, never forms a keyword */
         if ((a->type == LCC_TK_IDENT) &&
             (b->type == LCC_TK_LITERAL) &&
             ((b->literal.type == LCC_LT_INT) ||
              (b->literal.type == LCC_LT_LONG) ||
              (b->literal.type == LCC_LT_LONGLONG) ||
-             (b->literal.type == LCC_LT_UINT ||
+             (b->literal.type == LCC_LT_UINT) ||
              (b->literal.type == LCC_LT_ULONG) ||
-             (b->literal.type == LCC_LT_ULONGLONG))))
+             (b->literal.type == LCC_LT_ULONGLONG)))
         {
             /* append with the next token */
             lcc_string_append(a->src, b->src);
             lcc_string_append(a->ident, b->literal.raw);
+
+            /* attach the new token */
+            lcc_token_free(b);
+            lcc_token_attach(t, a);
+            continue;
+        }
+
+        /* both keywords, always form an identifier */
+        if ((a->type == LCC_TK_KEYWORD) &&
+            (b->type == LCC_TK_KEYWORD))
+        {
+            /* both keywords */
+            const char *kw1 = lcc_token_kw_name(a->keyword);
+            const char *kw2 = lcc_token_kw_name(b->keyword);
+
+            /* convert to identifier */
+            a->type = LCC_TK_IDENT;
+            a->ident = lcc_string_from_format("%s%s", kw1, kw2);
+
+            /* attach the new token */
+            lcc_token_free(b);
+            lcc_token_attach(t, a);
+            continue;
+        }
+
+        /* identifier and keyword, may form a keyword */
+        if ((a->type == LCC_TK_IDENT) &&
+            (b->type == LCC_TK_KEYWORD))
+        {
+            /* only "un" and "signed" can form "unsigned" */
+            if (!(strcmp(a->ident->buf, "un")) &&
+                (b->keyword == LCC_KW_SIGNED))
+            {
+                lcc_string_unref(a->ident);
+                a->type = LCC_TK_KEYWORD;
+                a->keyword = LCC_KW_UNSIGNED;
+            }
+
+            /* otherwise build an identifier */
+            else
+            {
+                a->type = LCC_TK_IDENT;
+                lcc_string_append_from(a->ident, lcc_token_kw_name(b->keyword));
+            }
+
+            /* attach the new token */
+            lcc_token_free(b);
+            lcc_token_attach(t, a);
+            continue;
+        }
+
+        /* keyword and identifier, may form a keyword */
+        if ((a->type == LCC_TK_KEYWORD) &&
+            (b->type == LCC_TK_IDENT))
+        {
+            /* only "do" and "uble" can form "double" */
+            if ((a->keyword == LCC_KW_DO) &&
+                !(strcmp(b->ident->buf, "uble")))
+            {
+                a->type = LCC_TK_KEYWORD;
+                a->keyword = LCC_KW_DOUBLE;
+            }
+
+            /* otherwise build an identifier */
+            else
+            {
+                a->type = LCC_TK_IDENT;
+                a->ident = lcc_string_from_format(
+                    "%s%s",
+                    lcc_token_kw_name(a->keyword),
+                    b->ident->buf
+                );
+            }
+
+            /* attach the new token */
+            lcc_token_free(b);
+            lcc_token_attach(t, a);
+            continue;
+        }
+
+        /* keyword and integer, always form an identifier */
+        if ((a->type == LCC_TK_KEYWORD) &&
+            (b->type == LCC_TK_LITERAL) &&
+            ((b->literal.type == LCC_LT_INT) ||
+             (b->literal.type == LCC_LT_LONG) ||
+             (b->literal.type == LCC_LT_LONGLONG) ||
+             (b->literal.type == LCC_LT_UINT) ||
+             (b->literal.type == LCC_LT_ULONG) ||
+             (b->literal.type == LCC_LT_ULONGLONG)))
+        {
+            /* both keywords */
+            const char *kw = lcc_token_kw_name(a->keyword);
+            const char *num = b->literal.raw->buf;
+
+            /* convert to identifier */
+            a->type = LCC_TK_IDENT;
+            a->ident = lcc_string_from_format("%s%s", kw, num);
 
             /* attach the new token */
             lcc_token_free(b);
@@ -2671,8 +2781,6 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
 #undef _MAP
 
         }
-
-        // TODO: there are more possible concatenations
 
         /* otherwise it's an error, dump the token */
         lcc_string_t *tk1 = lcc_token_as_string(a);
