@@ -336,9 +336,9 @@ lcc_token_t *lcc_token_from_raw(lcc_string_t *src, lcc_string_t *value)
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
-    self->literal.raw = value;
+    self->literal.raw = lcc_string_from_format("\"%s\"", value->buf);
     self->literal.type = LCC_LT_STRING;
-    self->literal.v_string = lcc_string_copy(value);
+    self->literal.v_string = value;
     return self;
 }
 
@@ -350,9 +350,9 @@ lcc_token_t *lcc_token_from_char(lcc_string_t *src, lcc_string_t *value, char al
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
-    self->literal.raw = value;
+    self->literal.raw = lcc_string_from_format("'%s'", value->buf);
     self->literal.type = LCC_LT_CHAR;
-    self->literal.v_char = _lcc_string_eval(lcc_string_copy(value), allow_gnuext);
+    self->literal.v_char = _lcc_string_eval(value, allow_gnuext);
     return self;
 }
 
@@ -364,9 +364,9 @@ lcc_token_t *lcc_token_from_string(lcc_string_t *src, lcc_string_t *value, char 
     self->prev = self;
     self->next = self;
     self->type = LCC_TK_LITERAL;
-    self->literal.raw = value;
+    self->literal.raw = lcc_string_from_format("\"%s\"", value->buf);
     self->literal.type = LCC_LT_STRING;
-    self->literal.v_string = _lcc_string_eval(lcc_string_copy(value), allow_gnuext);
+    self->literal.v_string = _lcc_string_eval(value, allow_gnuext);
     return self;
 }
 
@@ -523,7 +523,7 @@ const char *lcc_token_op_name(lcc_operator_t value)
     abort();
 }
 
-lcc_string_t *lcc_token_as_string(lcc_token_t *self)
+lcc_string_t *lcc_token_str(lcc_token_t *self)
 {
     switch (self->type)
     {
@@ -537,7 +537,7 @@ lcc_string_t *lcc_token_as_string(lcc_token_t *self)
     abort();
 }
 
-lcc_string_t *lcc_token_to_string(lcc_token_t *self)
+lcc_string_t *lcc_token_repr(lcc_token_t *self)
 {
     switch (self->type)
     {
@@ -558,8 +558,8 @@ lcc_string_t *lcc_token_to_string(lcc_token_t *self)
                 case LCC_LT_FLOAT      : return lcc_string_from_format("{FLOAT:%s}"     , self->literal.raw->buf);
                 case LCC_LT_DOUBLE     : return lcc_string_from_format("{DOUBLE:%s}"    , self->literal.raw->buf);
                 case LCC_LT_LONGDOUBLE : return lcc_string_from_format("{LONGDOUBLE:%s}", self->literal.raw->buf);
-                case LCC_LT_CHAR       : return lcc_string_from_format("{CHARS:'%s'}"   , self->literal.raw->buf);
-                case LCC_LT_STRING     : return lcc_string_from_format("{STRING:\"%s\"}", self->literal.raw->buf);
+                case LCC_LT_CHAR       : return lcc_string_from_format("{CHARS:%s}"     , self->literal.raw->buf);
+                case LCC_LT_STRING     : return lcc_string_from_format("{STRING:%s}"    , self->literal.raw->buf);
             }
         }
     }
@@ -2383,7 +2383,7 @@ static inline lcc_string_t *_lcc_make_message(lcc_lexer_t *self)
     /* concat each token */
     while (self->tokens.next != &(self->tokens))
     {
-        lcc_string_append(s, (p = lcc_token_as_string(self->tokens.next)));
+        lcc_string_append(s, (p = lcc_token_str(self->tokens.next)));
         lcc_string_append_from(s, " ");
         lcc_string_unref(p);
         lcc_token_free(self->tokens.next);
@@ -2677,8 +2677,8 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
         }
 
         /* otherwise it's an error, dump the token */
-        lcc_string_t *tk1 = lcc_token_as_string(a);
-        lcc_string_t *tk2 = lcc_token_as_string(b);
+        lcc_string_t *tk1 = lcc_token_str(a);
+        lcc_string_t *tk2 = lcc_token_str(b);
 
         /* throw the error */
         _lcc_lexer_error(self, "\"%s%s\" is an invalid preprocessor token", tk1->buf, tk2->buf);
@@ -3416,7 +3416,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             printf("IF:\n");
             while (self->tokens.next != &(self->tokens))
             {
-                lcc_string_t *s = lcc_token_to_string(self->tokens.next);
+                lcc_string_t *s = lcc_token_repr(self->tokens.next);
                 printf(">> %s\n", s->buf);
                 lcc_string_unref(s);
                 lcc_token_free(self->tokens.next);
@@ -3461,7 +3461,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             printf("ELIF:\n");
             while (self->tokens.next != &(self->tokens))
             {
-                lcc_string_t *s = lcc_token_to_string(self->tokens.next);
+                lcc_string_t *s = lcc_token_repr(self->tokens.next);
                 printf(">> %s\n", s->buf);
                 lcc_string_unref(s);
                 lcc_token_free(self->tokens.next);

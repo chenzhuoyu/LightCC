@@ -188,8 +188,8 @@ lcc_token_t *lcc_token_from_number(lcc_string_t *src, lcc_string_t *value, lcc_l
 const char *lcc_token_kw_name(lcc_keyword_t value);
 const char *lcc_token_op_name(lcc_operator_t value);
 
-lcc_string_t *lcc_token_as_string(lcc_token_t *self);
-lcc_string_t *lcc_token_to_string(lcc_token_t *self);
+lcc_string_t *lcc_token_str(lcc_token_t *self);
+lcc_string_t *lcc_token_repr(lcc_token_t *self);
 
 /*** Source File ***/
 
