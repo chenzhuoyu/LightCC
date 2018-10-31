@@ -177,6 +177,7 @@ lcc_token_t *lcc_token_copy(lcc_token_t *self);
 lcc_token_t *lcc_token_detach(lcc_token_t *self);
 
 lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident);
+lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword);
 lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator);
 
 lcc_token_t *lcc_token_from_raw(lcc_string_t *src, lcc_string_t *value);

@@ -304,6 +304,18 @@ lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident)
     return self;
 }
 
+lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword)
+{
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = src;
+    self->prev = self;
+    self->next = self;
+    self->type = LCC_TK_KEYWORD;
+    self->keyword = keyword;
+    return self;
+}
+
 lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
