@@ -297,6 +297,35 @@ typedef enum _lcc_lexer_define_state_t
     LCC_LX_DEFSTATE_END,
 } lcc_lexer_define_state_t;
 
+typedef enum _lcc_lexer_condition_state_t
+{
+    LCC_LX_CONDSTATE_IDLE,
+    LCC_LX_CONDSTATE_SLASH,
+    LCC_LX_CONDSTATE_SOURCE,
+    LCC_LX_CONDSTATE_DIRECTIVE,
+    LCC_LX_CONDSTATE_LINE_COMMENT,
+    LCC_LX_CONDSTATE_BLOCK_COMMENT,
+    LCC_LX_CONDSTATE_BLOCK_COMMENT_END,
+    LCC_LX_CONDSTATE_E,
+    LCC_LX_CONDSTATE_EL,
+    LCC_LX_CONDSTATE_ELS,
+    LCC_LX_CONDSTATE_ELSE,
+    LCC_LX_CONDSTATE_ELSE_COMMIT,
+    LCC_LX_CONDSTATE_ELI,
+    LCC_LX_CONDSTATE_ELIF,
+    LCC_LX_CONDSTATE_EN,
+    LCC_LX_CONDSTATE_END,
+    LCC_LX_CONDSTATE_ENDI,
+    LCC_LX_CONDSTATE_ENDIF,
+    LCC_LX_CONDSTATE_ENDIF_COMMIT,
+    LCC_LX_CONDSTATE_I,
+    LCC_LX_CONDSTATE_IF,
+    LCC_LX_CONDSTATE_IFN,
+    LCC_LX_CONDSTATE_IFD,
+    LCC_LX_CONDSTATE_IFDE,
+    LCC_LX_CONDSTATE_IFDEF,
+} lcc_lexer_condition_state_t;
+
 typedef enum _lcc_lexer_error_type_t
 {
     LCC_LXET_ERROR,
@@ -366,8 +395,10 @@ typedef struct _lcc_lexer_t
     lcc_lexer_state_t state;
     lcc_lexer_substate_t substate;
     lcc_lexer_define_state_t defstate;
+    lcc_lexer_condition_state_t condstate;
 
     /* complex state buffers */
+    size_t cond_level;
     size_t subst_level;
     lcc_array_t eval_stack;
     lcc_string_t *macro_name;

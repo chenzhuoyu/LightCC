@@ -722,6 +722,9 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
+#define _LCC_MAX_MACRO_ARGS     65536
+#define _LCC_MAX_MACRO_NBMP     (_LCC_MAX_MACRO_ARGS / (sizeof(uint64_t) * 8))
+
 typedef struct __lcc_sym_t
 {
     long flags;
@@ -1014,10 +1017,17 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* check for sub-state */
         switch (self->substate)
         {
-            /* in the middle of nothing (or comment), just ignore it */
+            /* in the middle of nothing, just ignore it */
             case LCC_LX_SUBSTATE_NULL:
-            case LCC_LX_SUBSTATE_COMMENT_LINE:
                 break;
+
+            /* clear source buffer when line comment ends */
+            case LCC_LX_SUBSTATE_COMMENT_LINE:
+            {
+                self->source->len = 0;
+                self->source->buf[0] = 0;
+                break;
+            }
 
             /* block comment */
             case LCC_LX_SUBSTATE_COMMENT_BLOCK:
@@ -2244,14 +2254,47 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         /* block comment end */
         case LCC_LX_SUBSTATE_COMMENT_BLOCK_END:
         {
-            self->state = LCC_LX_STATE_SHIFT;
-            self->substate = (self->ch == '/') ? LCC_LX_SUBSTATE_NULL : LCC_LX_SUBSTATE_COMMENT_BLOCK;
-            break;
+            /* block comment ends */
+            if (self->ch == '/')
+            {
+                /* clear source buffer */
+                self->source->len = 0;
+                self->source->buf[0] = 0;
+
+                /* shift to next state */
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                break;
+            }
+
+            /* we might have multiple stars before "/" character */
+            if (self->ch != '*')
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_COMMENT_BLOCK;
+                break;
+            }
+            else
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_COMMENT_BLOCK_END;
+                break;
+            }
         }
     }
 }
 
 #undef _LCC_WRONG_CHAR
+
+static int64_t _lcc_eval_tokens(lcc_lexer_t *self, lcc_token_t *start, lcc_token_t *end)
+{
+    /* empty token expands to 0 */
+    if (start == end)
+        return 0;
+
+    // TODO: eval tokens
+    return 0;
+}
 
 #define _LCC_FETCH_TOKEN(self, efmt, ...)                   \
 ({                                                          \
@@ -3085,8 +3128,8 @@ static void _lcc_handle_define(lcc_lexer_t *self)
                 /* named argument */
                 case LCC_TK_IDENT:
                 {
-                    /* can have at most 65536 macro arguments */
-                    if (self->macro_args.array.count >= 65536)
+                    /* can have at most _LCC_MAX_MACRO_ARGS macro arguments */
+                    if (self->macro_args.array.count >= _LCC_MAX_MACRO_ARGS)
                     {
                         _lcc_lexer_error(self, "Too many macro arguments");
                         return;
@@ -3206,6 +3249,364 @@ static void _lcc_handle_define(lcc_lexer_t *self)
     }
 }
 
+static void _lcc_handle_condition(lcc_lexer_t *self)
+{
+    /* end of file encountered */
+    if (self->flags & LCC_LXF_EOF)
+    {
+        _lcc_lexer_error(self, "Unterminated conditional directive");
+        return;
+    }
+
+    /* end of line encountered, reset state if needed */
+    if (self->flags & LCC_LXF_EOL)
+    {
+        /* check for current status */
+        switch (self->condstate)
+        {
+            /* "#else" */
+            case LCC_LX_CONDSTATE_ELSE:
+            case LCC_LX_CONDSTATE_ELSE_COMMIT:
+            {
+                /* not on root level */
+                if (self->cond_level != 1)
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NULL;
+                    self->condstate = LCC_LX_CONDSTATE_IDLE;
+                    return;
+                }
+
+                /* insert an "#else" preprocessor directive */
+                self->flags |= LCC_LXF_DIRECTIVE;
+                self->flags |= LCC_LXDN_ELSE;
+
+                /* commit the directive */
+                self->state = LCC_LX_STATE_COMMIT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                return;
+            }
+
+            /* "#endif" */
+            case LCC_LX_CONDSTATE_ENDIF:
+            case LCC_LX_CONDSTATE_ENDIF_COMMIT:
+            {
+                /* not on root level */
+                if (--self->cond_level)
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NULL;
+                    self->condstate = LCC_LX_CONDSTATE_IDLE;
+                    return;
+                }
+
+                /* insert an "#endif" preprocessor directive */
+                self->flags |= LCC_LXF_DIRECTIVE;
+                self->flags |= LCC_LXDN_ENDIF;
+
+                /* commit the directive */
+                self->state = LCC_LX_STATE_COMMIT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                return;
+            }
+
+            /* new-line is permitted in block comments */
+            case LCC_LX_CONDSTATE_BLOCK_COMMENT:
+            case LCC_LX_CONDSTATE_BLOCK_COMMENT_END:
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                return;
+            }
+
+            /* reset state for other status */
+            default:
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                self->condstate = LCC_LX_CONDSTATE_IDLE;
+                return;
+            }
+        }
+    }
+
+    /* check condition state */
+    switch (self->condstate)
+    {
+        /* idle state, drop characters as needed */
+        case LCC_LX_CONDSTATE_IDLE:
+        {
+            switch (self->ch)
+            {
+                /* "/" or "#" encountered */
+                case '/': self->condstate = LCC_LX_CONDSTATE_SLASH; break;
+                case '#': self->condstate = LCC_LX_CONDSTATE_DIRECTIVE; break;
+
+                /* other characters */
+                default:
+                {
+                    /* not a space, this is a normal source line */
+                    if (!(isspace(self->ch)))
+                        self->condstate = LCC_LX_CONDSTATE_SOURCE;
+
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* "/" encountered, maybe line comment or block comment */
+        case LCC_LX_CONDSTATE_SLASH:
+        {
+            switch (self->ch)
+            {
+                case '/': self->condstate = LCC_LX_CONDSTATE_LINE_COMMENT; break;
+                case '*': self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT; break;
+                default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
+            }
+
+            break;
+        }
+
+        /* normal source line */
+        case LCC_LX_CONDSTATE_SOURCE:
+        {
+            /* "/" encountered, maybe line comment or block comment */
+            if (self->ch == '/')
+                self->condstate = LCC_LX_CONDSTATE_SLASH;
+
+            break;
+        }
+
+        /* "#" encountered, maybe a directive */
+        case LCC_LX_CONDSTATE_DIRECTIVE:
+        {
+            switch (self->ch)
+            {
+                /* "e" or "i" encountered */
+                case 'e': self->condstate = LCC_LX_CONDSTATE_E; break;
+                case 'i': self->condstate = LCC_LX_CONDSTATE_I; break;
+
+                /* other characters */
+                default:
+                {
+                    /* not a space, this is a normal source line */
+                    if (!(isspace(self->ch)))
+                        self->condstate = LCC_LX_CONDSTATE_SOURCE;
+
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* line comment, keep this state until next line */
+        case LCC_LX_CONDSTATE_LINE_COMMENT:
+            break;
+
+        /* block comment, check for "*" character */
+        case LCC_LX_CONDSTATE_BLOCK_COMMENT:
+        {
+            /* "*" encountered, maybe end of block comment */
+            if (self->ch == '*')
+                self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT_END;
+
+            break;
+        }
+
+        /* maybe end of block comment, only if we meet "/" */
+        case LCC_LX_CONDSTATE_BLOCK_COMMENT_END:
+        {
+            /* "/" encountered, block comment ends here */
+            if (self->ch == '/')
+                self->condstate = LCC_LX_CONDSTATE_SOURCE;
+
+            /* otherwise it's a false trigger, so revert
+             * back to block comment state, but we need to check
+             * such state that have multiple stars before a slash */
+            else if (self->ch != '*')
+                self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT;
+
+            break;
+        }
+
+        /* "#e(ndif|l(se|if))" */
+        case LCC_LX_CONDSTATE_E:
+        {
+            switch (self->ch)
+            {
+                case 'n': self->condstate = LCC_LX_CONDSTATE_EN; break;
+                case 'l': self->condstate = LCC_LX_CONDSTATE_EL; break;
+                default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
+            }
+
+            break;
+        }
+
+        /* "#el(se|if) */
+        case LCC_LX_CONDSTATE_EL:
+        {
+            switch (self->ch)
+            {
+                case 'i': self->condstate = LCC_LX_CONDSTATE_ELI; break;
+                case 's': self->condstate = LCC_LX_CONDSTATE_ELS; break;
+                default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
+            }
+
+            break;
+        }
+
+        /* "#els(e)" */
+        case LCC_LX_CONDSTATE_ELS:
+        {
+            self->condstate = (self->ch == 'e') ? LCC_LX_CONDSTATE_ELSE : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#else" */
+        case LCC_LX_CONDSTATE_ELSE:
+        {
+            self->condstate = isspace(self->ch) ? LCC_LX_CONDSTATE_ELSE_COMMIT : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#eli(f)" */
+        case LCC_LX_CONDSTATE_ELI:
+        {
+            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_ELIF : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#elif" */
+        case LCC_LX_CONDSTATE_ELIF:
+        {
+            /* should be a space character */
+            if (!(isspace(self->ch)) || (self->cond_level != 1))
+            {
+                self->condstate = LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* insert an "#elif" preprocessor directive */
+            self->flags |= LCC_LXF_DIRECTIVE;
+            self->flags |= LCC_LXDN_ELIF;
+            break;
+        }
+
+        /* "#en(dif)" */
+        case LCC_LX_CONDSTATE_EN:
+        {
+            self->condstate = (self->ch == 'd') ? LCC_LX_CONDSTATE_END : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#end(if)" */
+        case LCC_LX_CONDSTATE_END:
+        {
+            self->condstate = (self->ch == 'i') ? LCC_LX_CONDSTATE_ENDI : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#endi(f)" */
+        case LCC_LX_CONDSTATE_ENDI:
+        {
+            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_ENDIF : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#endif" */
+        case LCC_LX_CONDSTATE_ENDIF:
+        {
+            self->condstate = isspace(self->ch) ? LCC_LX_CONDSTATE_ENDIF_COMMIT : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#else" and "#endif" commit */
+        case LCC_LX_CONDSTATE_ELSE_COMMIT:
+        case LCC_LX_CONDSTATE_ENDIF_COMMIT:
+        {
+            /* should be spaces */
+            if (isspace(self->ch))
+                break;
+
+            /* redundent directive parameter */
+            _lcc_lexer_error(self, "Redundent directive parameter");
+            return;
+        }
+
+        /* "#i(f((n)?def)?) */
+        case LCC_LX_CONDSTATE_I:
+        {
+            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_IF : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#if((n)?def)?" */
+        case LCC_LX_CONDSTATE_IF:
+        {
+            switch (self->ch)
+            {
+                /* "d" or "n" encountered */
+                case 'd': self->condstate = LCC_LX_CONDSTATE_IFD; break;
+                case 'n': self->condstate = LCC_LX_CONDSTATE_IFN; break;
+
+                /* other characters */
+                default:
+                {
+                    /* is a space, commit as "#if" */
+                    if (isspace(self->ch))
+                        self->cond_level++;
+
+                    /* mark as source line */
+                    self->condstate = LCC_LX_CONDSTATE_SOURCE;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        /* "#ifn(def)" */
+        case LCC_LX_CONDSTATE_IFN:
+        {
+            self->condstate = (self->ch == 'd') ? LCC_LX_CONDSTATE_IFD : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#ifd(ef)" or "#ifnd(ef)" */
+        case LCC_LX_CONDSTATE_IFD:
+        {
+            self->condstate = (self->ch == 'e') ? LCC_LX_CONDSTATE_IFDE : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#ifde(f)" or "#ifnde(f)" */
+        case LCC_LX_CONDSTATE_IFDE:
+        {
+            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_IFDEF : LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+
+        /* "#ifdef" or "#ifndef" */
+        case LCC_LX_CONDSTATE_IFDEF:
+        {
+            /* should have a space */
+            if (isspace(self->ch))
+                self->cond_level++;
+
+            /* mark as source line */
+            self->condstate = LCC_LX_CONDSTATE_SOURCE;
+            break;
+        }
+    }
+
+    /* shift next character */
+    self->state = LCC_LX_STATE_SHIFT;
+    self->substate = LCC_LX_SUBSTATE_NULL;
+}
+
 static void _lcc_handle_directive(lcc_lexer_t *self)
 {
     switch (self->flags & LCC_LXDN_MASK)
@@ -3316,13 +3717,17 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
             /* create a new symbol */
             _lcc_sym_t sym = {
-                .nx = calloc(1024, sizeof(uint64_t)),
+                .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),
                 .body = lcc_token_new(),
                 .name = self->macro_name,
                 .args = self->macro_args,
                 .flags = self->flags,
                 .vaname = self->macro_vaname,
             };
+
+            /* make sure we have at least 1 flag set */
+            if (!(sym.flags & LCC_LXDF_DEFINE_F))
+                sym.flags |= LCC_LXDF_DEFINE_O;
 
             /* move everything remaining to macro body */
             if (self->tokens.next != &(self->tokens))
@@ -3399,7 +3804,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         /* "#undef" directive */
         case LCC_LXDN_UNDEF:
         {
-            /* extract the file name */
+            /* extract the macro name */
             lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
@@ -3412,80 +3817,90 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             break;
         }
 
-        /* "#if" directive */
+        /* "#if" and "#elif" directives */
         case LCC_LXDN_IF:
-        {
-            // TODO: handle if
-            printf("IF:\n");
-            while (self->tokens.next != &(self->tokens))
-            {
-                lcc_string_t *s = lcc_token_repr(self->tokens.next);
-                printf(">> %s\n", s->buf);
-                lcc_string_unref(s);
-                lcc_token_free(self->tokens.next);
-            }
-            break;
-        }
-
-        /* "#ifdef" directive */
-        case LCC_LXDN_IFDEF:
-        {
-            /* extract the file name */
-            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
-            lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
-
-            // TODO: handle ifdef
-            printf("IFDEF: %s\n", macro->buf);
-
-            /* release the token */
-            lcc_token_free(token);
-            break;
-        }
-
-        /* "#ifndef" directive */
-        case LCC_LXDN_IFNDEF:
-        {
-            /* extract the file name */
-            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
-            lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
-
-            // TODO: handle ifndef
-            printf("IFNDEF: %s\n", macro->buf);
-
-            /* release the token */
-            lcc_token_free(token);
-            break;
-        }
-
-        /* "#elif" directive */
         case LCC_LXDN_ELIF:
         {
-            // TODO: handle elif
-            printf("ELIF:\n");
-            while (self->tokens.next != &(self->tokens))
+            /* perform substitution */
+            _lcc_macro_subst(
+                self,
+                self->tokens.next,
+                &(self->tokens)
+            );
+
+            /* evaluate token sequence */
+            int64_t val = _lcc_eval_tokens(self, self->tokens.next, &(self->tokens));
+            lcc_array_t *stack = &(self->eval_stack);
+
+            /* pop the old value if "#elif" */
+            if (((self->flags & LCC_LXDN_MASK) == LCC_LXDN_ELIF) &&
+                !(lcc_array_pop(stack, NULL)))
             {
-                lcc_string_t *s = lcc_token_repr(self->tokens.next);
-                printf(">> %s\n", s->buf);
-                lcc_string_unref(s);
-                lcc_token_free(self->tokens.next);
+                _lcc_lexer_error(self, "#elif without #if");
+                return;
             }
+
+            /* push new value, and set conditional lexer state */
+            lcc_array_append(stack, &val);
+            self->condstate = LCC_LX_CONDSTATE_IDLE;
+            self->cond_level = 1;
+            break;
+        }
+
+        /* "#ifdef" and "#ifndef" directives */
+        case LCC_LXDN_IFDEF:
+        case LCC_LXDN_IFNDEF:
+        {
+            /* extract the macro name */
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
+            lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
+
+            /* check for defination */
+            char has_sym = lcc_map_get(&(self->psyms), macro, NULL);
+            char flag_ifdef = ((self->flags & LCC_LXDN_MASK) == LCC_LXDN_IFDEF);
+            int64_t value_eval = (has_sym == flag_ifdef) ? 1 : 0;
+
+            /* conditional lexer state */
+            self->condstate = LCC_LX_CONDSTATE_IDLE;
+            self->cond_level = 1;
+
+            /* release the token, and push the new value onto eval stack */
+            lcc_token_free(token);
+            lcc_array_append(&(self->eval_stack), &value_eval);
             break;
         }
 
         /* "#else" directive */
         case LCC_LXDN_ELSE:
         {
-            // TODO: handle else
-            printf("ELSE\n");
+            /* extract the last value on stack */
+            int64_t *value;
+            lcc_array_t *stack = &(self->eval_stack);
+
+            /* nothing on stack, that's an error */
+            if (!(value = lcc_array_top(stack)))
+            {
+                _lcc_lexer_error(self, "#else without #if");
+                return;
+            }
+
+            /* invert condition to emulate "else" */
+            *value = !(*value);
+            self->condstate = LCC_LX_CONDSTATE_IDLE;
+            self->cond_level = 1;
             break;
         }
 
         /* "#endif" directive */
         case LCC_LXDN_ENDIF:
         {
-            // TODO: handle endif
-            printf("ENDIF\n");
-            break;
+            /* pop the last value from eval stack */
+            if (lcc_array_pop(&(self->eval_stack), NULL))
+                break;
+
+            /* nothing on stack, that's an error */
+            _lcc_lexer_error(self, "#endif without #if");
+            return;
         }
 
         /* "#pragma" directive */
@@ -3573,6 +3988,21 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 #undef _LCC_ENSURE_STRING
 #undef _LCC_ENSURE_OPERATOR
 
+static inline char _lcc_check_drop_char(lcc_lexer_t *self)
+{
+    /* most inner compiling section condition */
+    int64_t *value;
+    lcc_array_t *stack = &(self->eval_stack);
+
+    /* outside of condition compiling section,
+     * or parsing compiler directives */
+    if (!(value = lcc_array_top(stack)) ||
+        (self->flags & LCC_LXF_DIRECTIVE))
+        return 0;
+    else
+        return (*value == 0);
+}
+
 static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 {
     /* check for every character after this */
@@ -3603,7 +4033,7 @@ void lcc_lexer_free(lcc_lexer_t *self)
     if (self->fname)
         lcc_string_unref(self->fname);
 
-    /* release all chained tokens */
+    /* release all cached tokens */
     while (self->tokens.next != &(self->tokens))
         lcc_token_free(self->tokens.next);
 
@@ -3611,8 +4041,11 @@ void lcc_lexer_free(lcc_lexer_t *self)
     lcc_map_free(&(self->psyms));
     lcc_string_array_free(&(self->sccs_msgs));
 
-    /* clear other tables */
+    /* clear complex state buffers */
     lcc_array_free(&(self->files));
+    lcc_array_free(&(self->eval_stack));
+
+    /* clear other tables */
     lcc_string_unref(self->source);
     lcc_token_buffer_free(&(self->token_buffer));
     lcc_string_array_free(&(self->include_paths));
@@ -3637,6 +4070,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     /* complex structures */
     lcc_map_init(&(self->psyms), sizeof(_lcc_sym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
+    lcc_array_init(&(self->eval_stack), sizeof(int64_t), NULL, NULL);
 
     /* token list and token buffer */
     lcc_token_init(&(self->tokens));
@@ -3833,8 +4267,16 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                 }
 
                 /* set EOF flags to flush the preprocessor */
-                self->flags |= LCC_LXF_EOF;
-                _lcc_handle_substate(self);
+                if (!(_lcc_check_drop_char(self)))
+                {
+                    self->flags |= LCC_LXF_EOF;
+                    _lcc_handle_substate(self);
+                }
+                else
+                {
+                    self->flags |= LCC_LXF_EOF;
+                    _lcc_handle_condition(self);
+                }
 
                 /* no files left, it's an EOS (End-Of-Source) */
                 if (self->files.count == 1)
@@ -3859,10 +4301,19 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             /* move to next line */
             case LCC_LX_STATE_NEXT_LINE:
             {
-                /* set EOL flags to flush the preprocessor */
-                self->flags |= LCC_LXF_EOL;
-                lcc_string_append_from(self->source, "\n");
-                _lcc_handle_substate(self);
+                /* in condition compilation section,
+                 * whereas this section is not compiled */
+                if (_lcc_check_drop_char(self))
+                {
+                    self->flags |= LCC_LXF_EOL;
+                    _lcc_handle_condition(self);
+                }
+                else
+                {
+                    self->flags |= LCC_LXF_EOL;
+                    lcc_string_append_from(self->source, "\n");
+                    _lcc_handle_substate(self);
+                }
 
                 /* move to next line */
                 self->file->row++;
@@ -3883,29 +4334,40 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             /* we got a new character */
             case LCC_LX_STATE_GOT_CHAR:
             {
-                /* Special Case :: "#define" compiler directive
-                 * distingush object-like and function-like macros */
-                if ((self->flags & LCC_LXDN_DEFINE) &&
-                    (self->flags & LCC_LXDF_DEFINE_MASK) == LCC_LXDF_DEFINE_NS)
+                /* in condition compilation section,
+                 * whereas this section is not compiled */
+                if (_lcc_check_drop_char(self))
                 {
-                    if (self->ch == '(')
-                        self->flags |= LCC_LXDF_DEFINE_F;
-                    else
-                        self->flags |= LCC_LXDF_DEFINE_O;
+                    self->flags &= ~LCC_LXF_EOF;
+                    self->flags &= ~LCC_LXF_EOL;
+                    _lcc_handle_condition(self);
                 }
+                else
+                {
+                    /* Special Case :: "#define" compiler directive
+                     * distingush object-like and function-like macros */
+                    if ((self->flags & LCC_LXDN_DEFINE) &&
+                        (self->flags & LCC_LXDF_DEFINE_MASK) == LCC_LXDF_DEFINE_NS)
+                    {
+                        if (self->ch == '(')
+                            self->flags |= LCC_LXDF_DEFINE_F;
+                        else
+                            self->flags |= LCC_LXDF_DEFINE_O;
+                    }
 
-                /* append last character if not EOF or EOL */
-                if (!(self->flags & (LCC_LXF_EOF | LCC_LXF_EOL)))
-                    lcc_string_append_from_size(self->source, &(self->ch), 1);
+                    /* append last character if not EOF or EOL */
+                    if (!(self->flags & (LCC_LXF_EOF | LCC_LXF_EOL)))
+                        lcc_string_append_from_size(self->source, &(self->ch), 1);
 
-                /* handle all sub-states */
-                self->flags &= ~LCC_LXF_EOF;
-                self->flags &= ~LCC_LXF_EOL;
-                _lcc_handle_substate(self);
+                    /* handle all sub-states */
+                    self->flags &= ~LCC_LXF_EOF;
+                    self->flags &= ~LCC_LXF_EOL;
+                    _lcc_handle_substate(self);
 
-                /* not a space, prohibit compiler directive on this line */
-                if (!(isspace(self->ch)))
-                    self->file->flags |= LCC_FF_LNODIR;
+                    /* not a space, prohibit compiler directive on this line */
+                    if (!(isspace(self->ch)))
+                        self->file->flags |= LCC_FF_LNODIR;
+                }
 
                 break;
             }
