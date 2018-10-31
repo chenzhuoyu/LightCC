@@ -304,18 +304,6 @@ lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident)
     return self;
 }
 
-lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword)
-{
-    lcc_token_t *self = malloc(sizeof(lcc_token_t));
-    self->ref = 0;
-    self->src = src;
-    self->prev = self;
-    self->next = self;
-    self->type = LCC_TK_KEYWORD;
-    self->keyword = keyword;
-    return self;
-}
-
 lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator)
 {
     lcc_token_t *self = malloc(sizeof(lcc_token_t));
@@ -719,6 +707,16 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
+typedef struct __lcc_sym_t
+{
+    long flags;
+    uint64_t *nx;
+    lcc_token_t *body;
+    lcc_string_t *name;
+    lcc_string_t *vaname;
+    lcc_string_array_t args;
+} _lcc_sym_t;
+
 typedef struct __lcc_keyword_item_t
 {
     const char *name;
@@ -919,26 +917,11 @@ static inline char _lcc_commit_ident(lcc_lexer_t *self, char keep_tail)
         return 0;
     }
 
-    /* keyword index */
-    ssize_t id = -1;
-    lcc_token_t *token;
-    lcc_string_t *source = _lcc_swap_source(self, keep_tail);
-
-    /* search for keyworkds */
-    for (size_t i = 0; KEYWORDS[i].name; i++)
-    {
-        if (!(strcmp(KEYWORDS[i].name, self->token_buffer.buf)))
-        {
-            id = i;
-            break;
-        }
-    }
-
     /* create a new token */
-    if (id < 0)
-        token = lcc_token_from_ident(source, _lcc_dump_token(self));
-    else
-        token = lcc_token_from_keyword(source, KEYWORDS[id].keyword);
+    lcc_token_t *token = lcc_token_from_ident(
+        _lcc_swap_source(self, keep_tail),
+        _lcc_dump_token(self)
+    );
 
     /* attach to token chain */
     lcc_token_attach(&(self->tokens), token);
@@ -996,6 +979,15 @@ static inline void _lcc_commit_operator(lcc_lexer_t *self, lcc_operator_t operat
 {
     lcc_string_t *src = _lcc_swap_source(self, keep_tail);
     lcc_token_attach(&(self->tokens), lcc_token_from_operator(src, operator));
+}
+
+static void _lcc_sym_free(_lcc_sym_t *self)
+{
+    free(self->nx);
+    lcc_token_clear(self->body);
+    lcc_string_unref(self->name);
+    lcc_string_unref(self->vaname);
+    lcc_string_array_free(&(self->args));
 }
 
 static void _lcc_handle_substate(lcc_lexer_t *self)
@@ -2582,26 +2574,13 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
         t = t->next;
         lcc_token_free(t->prev);
 
-        /* both identifiers, may form a keyword */
+        /* both identifiers */
         if ((a->type == LCC_TK_IDENT) &&
             (b->type == LCC_TK_IDENT))
         {
             /* append with the next token */
             lcc_string_append(a->src, b->src);
             lcc_string_append(a->ident, b->ident);
-
-            /* search for keyworkds */
-            for (size_t i = 0; KEYWORDS[i].name; i++)
-            {
-                /* convert to keywords as needed */
-                if (!(strcmp(KEYWORDS[i].name, a->ident->buf)))
-                {
-                    lcc_string_unref(a->ident);
-                    a->type = LCC_TK_KEYWORD;
-                    a->keyword = KEYWORDS[i].keyword;
-                    break;
-                }
-            }
 
             /* attach the new token */
             lcc_token_free(b);
@@ -2622,103 +2601,6 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
             /* append with the next token */
             lcc_string_append(a->src, b->src);
             lcc_string_append(a->ident, b->literal.raw);
-
-            /* attach the new token */
-            lcc_token_free(b);
-            lcc_token_attach(t, a);
-            continue;
-        }
-
-        /* both keywords, always form an identifier */
-        if ((a->type == LCC_TK_KEYWORD) &&
-            (b->type == LCC_TK_KEYWORD))
-        {
-            /* both keywords */
-            const char *kw1 = lcc_token_kw_name(a->keyword);
-            const char *kw2 = lcc_token_kw_name(b->keyword);
-
-            /* convert to identifier */
-            a->type = LCC_TK_IDENT;
-            a->ident = lcc_string_from_format("%s%s", kw1, kw2);
-
-            /* attach the new token */
-            lcc_token_free(b);
-            lcc_token_attach(t, a);
-            continue;
-        }
-
-        /* identifier and keyword, may form a keyword */
-        if ((a->type == LCC_TK_IDENT) &&
-            (b->type == LCC_TK_KEYWORD))
-        {
-            /* only "un" and "signed" can form "unsigned" */
-            if (!(strcmp(a->ident->buf, "un")) &&
-                (b->keyword == LCC_KW_SIGNED))
-            {
-                lcc_string_unref(a->ident);
-                a->type = LCC_TK_KEYWORD;
-                a->keyword = LCC_KW_UNSIGNED;
-            }
-
-            /* otherwise build an identifier */
-            else
-            {
-                a->type = LCC_TK_IDENT;
-                lcc_string_append_from(a->ident, lcc_token_kw_name(b->keyword));
-            }
-
-            /* attach the new token */
-            lcc_token_free(b);
-            lcc_token_attach(t, a);
-            continue;
-        }
-
-        /* keyword and identifier, may form a keyword */
-        if ((a->type == LCC_TK_KEYWORD) &&
-            (b->type == LCC_TK_IDENT))
-        {
-            /* only "do" and "uble" can form "double" */
-            if ((a->keyword == LCC_KW_DO) &&
-                !(strcmp(b->ident->buf, "uble")))
-            {
-                a->type = LCC_TK_KEYWORD;
-                a->keyword = LCC_KW_DOUBLE;
-            }
-
-            /* otherwise build an identifier */
-            else
-            {
-                a->type = LCC_TK_IDENT;
-                a->ident = lcc_string_from_format(
-                    "%s%s",
-                    lcc_token_kw_name(a->keyword),
-                    b->ident->buf
-                );
-            }
-
-            /* attach the new token */
-            lcc_token_free(b);
-            lcc_token_attach(t, a);
-            continue;
-        }
-
-        /* keyword and integer, always form an identifier */
-        if ((a->type == LCC_TK_KEYWORD) &&
-            (b->type == LCC_TK_LITERAL) &&
-            ((b->literal.type == LCC_LT_INT) ||
-             (b->literal.type == LCC_LT_LONG) ||
-             (b->literal.type == LCC_LT_LONGLONG) ||
-             (b->literal.type == LCC_LT_UINT) ||
-             (b->literal.type == LCC_LT_ULONG) ||
-             (b->literal.type == LCC_LT_ULONGLONG)))
-        {
-            /* both keywords */
-            const char *kw = lcc_token_kw_name(a->keyword);
-            const char *num = b->literal.raw->buf;
-
-            /* convert to identifier */
-            a->type = LCC_TK_IDENT;
-            a->ident = lcc_string_from_format("%s%s", kw, num);
 
             /* attach the new token */
             lcc_token_free(b);
@@ -2817,7 +2699,7 @@ static void _lcc_macro_disp(lcc_token_t **pos, lcc_token_t **next, lcc_token_t *
     lcc_token_free(h);
 }
 
-static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, lcc_psym_t *sym, size_t argc, lcc_token_t **argv)
+static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sym, size_t argc, lcc_token_t **argv)
 {
     /* substitution result */
     ssize_t n;
@@ -2960,7 +2842,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, lcc_psym_t *sy
 static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end)
 {
     /* first token */
-    lcc_psym_t *sym;
+    _lcc_sym_t *sym;
     lcc_token_t *next;
     lcc_token_t *token = begin;
 
@@ -3417,83 +3299,83 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 return;
             }
 
-            /* not-expand (NX) bits (at most 65536 arguments) */
-            ssize_t n;
-            lcc_psym_t psym;
-            lcc_token_t *token = self->tokens.next;
-
             /* create a new symbol */
-            lcc_psym_init(
-                &psym,
-                self->macro_name,
-                &(self->macro_args),
-                self->flags,
-                self->macro_vaname
-            );
+            _lcc_sym_t sym = {
+                .nx = calloc(1024, sizeof(uint64_t)),
+                .body = lcc_token_new(),
+                .name = self->macro_name,
+                .args = self->macro_args,
+                .flags = self->flags,
+                .vaname = self->macro_vaname,
+            };
 
             /* move everything remaining to macro body */
             if (self->tokens.next != &(self->tokens))
             {
-                psym.body->prev = self->tokens.prev;
-                psym.body->next = self->tokens.next;
-                self->tokens.prev->next = psym.body;
-                self->tokens.next->prev = psym.body;
+                sym.body->prev = self->tokens.prev;
+                sym.body->next = self->tokens.next;
+                self->tokens.prev->next = sym.body;
+                self->tokens.next->prev = sym.body;
                 self->tokens.prev = &(self->tokens);
                 self->tokens.next = &(self->tokens);
             }
 
+            /* token header */
+            ssize_t n;
+            lcc_token_t *p = sym.body->next;
+
             /* search for arguments that don't need expansion */
-            while (token != psym.body)
+            while (p != sym.body)
             {
                 /* special operators */
-                if (token->type == LCC_TK_OPERATOR)
+                if (p->type == LCC_TK_OPERATOR)
                 {
                     /* mark identifier after "#" as not-expand (NX) */
-                    if (token->operator == LCC_OP_STRINGIZE)
+                    if (p->operator == LCC_OP_STRINGIZE)
                     {
                         /* must be an argument after "#" */
-                        if ((token->next->type != LCC_TK_IDENT) ||
-                            ((n = lcc_string_array_index(&(psym.args), token->next->ident)) < 0))
+                        if ((p->next->type != LCC_TK_IDENT) ||
+                            ((n = lcc_string_array_index(&(sym.args), p->next->ident)) < 0))
                         {
-                            lcc_psym_free(&psym);
+                            _lcc_sym_free(&sym);
                             _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
                             return;
                         }
 
                         /* mark as not-expand */
-                        psym.nx[n / 64] |= (1 << (n % 64));
+                        sym.nx[n / 64] |= (1 << (n % 64));
                     }
 
                     /* mark identifier before and after "##" as not-expand (NX) */
-                    else if (token->operator == LCC_OP_CONCAT)
+                    else if (p->operator == LCC_OP_CONCAT)
                     {
                         /* can't be placed in either side */
-                        if ((token->prev == psym.body) ||
-                            (token->next == psym.body))
+                        if ((p->prev == sym.body) ||
+                            (p->next == sym.body))
                         {
-                            lcc_psym_free(&psym);
+                            _lcc_sym_free(&sym);
                             _lcc_lexer_error(self, "'##' cannot appear at either side of macro expansion");
                             return;
                         }
 
                         /* before "##" */
-                        if ((token->prev->type == LCC_TK_IDENT) &&
-                            ((n = lcc_string_array_index(&(psym.args), token->prev->ident)) >= 0))
-                            psym.nx[n / 64] |= (1 << (n % 64));
+                        if ((p->prev->type == LCC_TK_IDENT) &&
+                            ((n = lcc_string_array_index(&(sym.args), p->prev->ident)) >= 0))
+                            sym.nx[n / 64] |= (1 << (n % 64));
 
                         /* after "##" */
-                        if ((token->next->type == LCC_TK_IDENT) &&
-                            ((n = lcc_string_array_index(&(psym.args), token->next->ident)) >= 0))
-                            psym.nx[n / 64] |= (1 << (n % 64));
+                        if ((p->next->type == LCC_TK_IDENT) &&
+                            ((n = lcc_string_array_index(&(sym.args), p->next->ident)) >= 0))
+                            sym.nx[n / 64] |= (1 << (n % 64));
                     }
                 }
 
                 /* move to next token */
-                token = token->next;
+                p = p->next;
             }
 
             /* add to predefined symbols */
-            if (lcc_map_set(&(self->psyms), self->macro_name, NULL, &psym))
+            if (lcc_map_set(&(self->psyms), self->macro_name, NULL, &sym))
                 _lcc_lexer_warning(self, "Symbol \"%s\" redefined", self->macro_name->buf);
 
             break;
@@ -3689,8 +3571,8 @@ static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 
 static void _lcc_psym_dtor(lcc_map_t *self, void *value, void *data)
 {
-    lcc_psym_t *sym = value;
-    lcc_psym_free(sym);
+    _lcc_sym_t *sym = value;
+    _lcc_sym_free(sym);
 }
 
 static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
@@ -3698,31 +3580,6 @@ static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
     lcc_file_t *fp = item;
     lcc_string_unref(fp->name);
     lcc_string_array_free(&(fp->lines));
-}
-
-void lcc_psym_free(lcc_psym_t *self)
-{
-    free(self->nx);
-    lcc_token_clear(self->body);
-    lcc_string_unref(self->name);
-    lcc_string_unref(self->vaname);
-    lcc_string_array_free(&(self->args));
-}
-
-void lcc_psym_init(
-    lcc_psym_t *self,
-    lcc_string_t *name,
-    lcc_string_array_t *args,
-    long flags,
-    lcc_string_t *vaname)
-{
-    self->nx = calloc(1024, sizeof(uint64_t));
-    self->body = lcc_token_new();
-    self->name = name;
-    self->args = *args;
-    self->flags = flags;
-    self->vaname = vaname;
-    memset(args, 0, sizeof(lcc_string_array_t));
 }
 
 void lcc_lexer_free(lcc_lexer_t *self)
@@ -3763,7 +3620,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     };
 
     /* complex structures */
-    lcc_map_init(&(self->psyms), sizeof(lcc_psym_t), _lcc_psym_dtor, NULL);
+    lcc_map_init(&(self->psyms), sizeof(_lcc_sym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
 
     /* token list and token buffer */
@@ -3833,7 +3690,28 @@ lcc_token_t *lcc_lexer_next(lcc_lexer_t *self)
             return NULL;
 
     /* shift one token from lexer token list */
-    return lcc_token_detach(self->tokens.next);
+    lcc_token_t *next = self->tokens.next;
+    lcc_token_t *token = lcc_token_detach(next);
+
+    /* keyword conversion */
+    if (token->type == LCC_TK_IDENT)
+    {
+        /* search in keyword mapping table */
+        for (ssize_t i = 0; KEYWORDS[i].name; i++)
+        {
+            /* found the keyword, upgrade to keyword token */
+            if (!(strcmp(KEYWORDS[i].name, token->ident->buf)))
+            {
+                lcc_string_unref(token->ident);
+                token->type = LCC_TK_KEYWORD;
+                token->keyword = KEYWORDS[i].keyword;
+                break;
+            }
+        }
+    }
+
+    /* token maybe converted */
+    return token;
 }
 
 lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
@@ -4061,7 +3939,7 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                     break;
 
                 /* get the newly accepted token */
-                lcc_psym_t *sym;
+                _lcc_sym_t *sym;
                 lcc_token_t *token = self->tokens.prev;
 
                 /* check for macro substitution */

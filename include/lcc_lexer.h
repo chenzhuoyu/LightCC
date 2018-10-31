@@ -177,7 +177,6 @@ lcc_token_t *lcc_token_copy(lcc_token_t *self);
 lcc_token_t *lcc_token_detach(lcc_token_t *self);
 
 lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident);
-lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword);
 lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator);
 
 lcc_token_t *lcc_token_from_raw(lcc_string_t *src, lcc_string_t *value);
@@ -350,25 +349,6 @@ typedef char (*lcc_lexer_on_error_fn)(
 
 #define LCC_LXDF_INCLUDE_SYS    0x0000000100000000      /* #include includes file from system headers */
 #define LCC_LXDF_INCLUDE_NEXT   0x0000000200000000      /* #include_next directive */
-
-typedef struct _lcc_psym_t
-{
-    long flags;
-    uint64_t *nx;
-    lcc_token_t *body;
-    lcc_string_t *name;
-    lcc_string_t *vaname;
-    lcc_string_array_t args;
-} lcc_psym_t;
-
-void lcc_psym_free(lcc_psym_t *self);
-void lcc_psym_init(
-    lcc_psym_t *self,
-    lcc_string_t *name,
-    lcc_string_array_t *args,
-    long flags,
-    lcc_string_t *vaname
-);
 
 typedef struct _lcc_lexer_t
 {
