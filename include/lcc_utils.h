@@ -15,7 +15,7 @@
     16, 15, 14, 13, 12, 11, 10,  9,                     \
      8,  7,  6,  5,  4,  3,  2,  1,                     \
      0                                                  \
- )
+)
 
 #define _LCC_FOR_EACH_L_0(macro, data, elem, ...)
 #define _LCC_FOR_EACH_L_1(macro, data, elem, ...)   macro( 0, data, elem)
