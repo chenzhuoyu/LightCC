@@ -5,7 +5,6 @@
 
 int main()
 {
-    int n = 0;
     lcc_lexer_t lexer;
     lcc_token_t *token;
     lcc_lexer_init(&lexer, lcc_file_open("/Users/Oxygen/Sources/tests/lcc_test.c"));
@@ -15,11 +14,14 @@ int main()
     lcc_lexer_add_include_path(&lexer, "/Users/Oxygen/Sources/tests");
     lcc_lexer_add_include_path(&lexer, "/Users/Oxygen/ClionProjects/LightCC/include");
 
+    int c = 0;
+    int n = 0;
     while ((token = lcc_lexer_next(&lexer)))
     {
         if (token->type == LCC_TK_OPERATOR &&
             token->operator == LCC_OP_LBLOCK)
         {
+            c = 0;
             n += 4;
             printf("{\n%*s", n, " ");
         }
@@ -27,7 +29,15 @@ int main()
                  token->operator == LCC_OP_RBLOCK)
         {
             n -= 4;
-            printf("\r%*s}\n%*s", n, " ", n, " ");
+            if (c)
+            {
+                c = 0;
+                printf("\n");
+            }
+            if (!n)
+                printf("\r}\n");
+            else
+                printf("\r%*s}\n%*s", n, " ", n, " ");
         }
         else if (token->type == LCC_TK_OPERATOR &&
                  (token->operator == LCC_OP_SEMICOLON ||
@@ -39,11 +49,13 @@ int main()
                 printf("%s \n", s->buf);
             else
                 printf("%s \n%*s", s->buf, n, " ");
+            c = 0;
             lcc_string_unref(s);
         }
         else
         {
             lcc_string_t *s = lcc_token_str(token);
+            c++;
             printf("%s ", s->buf);
             lcc_string_unref(s);
         }
