@@ -9,9 +9,11 @@ int main()
     lcc_lexer_t lexer;
     lcc_token_t *token;
     lcc_lexer_init(&lexer, lcc_file_open("/Users/Oxygen/Sources/tests/lcc_test.c"));
-    lcc_lexer_add_include_path(&lexer, "/Users/Oxygen/Sources/tests");
     lcc_lexer_add_include_path(&lexer, "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include");
+    lcc_lexer_add_include_path(&lexer, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/10.0.0/include");
     lcc_lexer_add_include_path(&lexer, "/usr/local/include");
+    lcc_lexer_add_include_path(&lexer, "/Users/Oxygen/Sources/tests");
+    lcc_lexer_add_include_path(&lexer, "/Users/Oxygen/ClionProjects/LightCC/include");
 
     while ((token = lcc_lexer_next(&lexer)))
     {
@@ -25,7 +27,7 @@ int main()
                  token->operator == LCC_OP_RBLOCK)
         {
             n -= 4;
-            printf("\r%*s} ", n, " ");
+            printf("\r%*s}\n%*s", n, " ", n, " ");
         }
         else if (token->type == LCC_TK_OPERATOR &&
                  (token->operator == LCC_OP_SEMICOLON ||

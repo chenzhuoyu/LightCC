@@ -3204,6 +3204,7 @@ static void _lcc_macro_disp(lcc_token_t **pos, lcc_token_t **next, lcc_token_t *
 static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sym, size_t argc, lcc_token_t **argv)
 {
     /* substitution result */
+    ssize_t m;
     ssize_t n;
     lcc_token_t *p = sym->body->next;
 
@@ -3235,8 +3236,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
 
         /* variadic argument substitution */
         if ((p->type == LCC_TK_IDENT) &&
-            (p->ident->len == sym->vaname->len) &&
-            !(strcmp(p->ident->buf, sym->vaname->buf)))
+            lcc_string_equals(p->ident, sym->vaname))
         {
             /* special case of "<varg> ## ..." where <varg> is nothing,
              * skip the variadic argument identifier, along with the "##" operator */
@@ -3265,8 +3265,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
             (p->next->type == LCC_TK_IDENT) &&                                      /* second token must be an identifier */
             ((((n = lcc_string_array_index(&(sym->args), p->next->ident)) >= 0) &&  /* which must be an argument name */
               (argv[n]->next == argv[n + 1])) ||                                    /* and this argument expands to nothing */
-             ((p->next->ident->len == sym->vaname->len) &&                          /* or the length of this name equals to varg name */
-              !(strcmp(p->next->ident->buf, sym->vaname->buf)) &&                   /* so does the characters */
+             (lcc_string_equals(p->next->ident, sym->vaname) &&                     /* or the name equals to varg name */
               ((argc <= sym->args.array.count) ||                                   /* and we don't have excess arguments to deal with */
                (argv[sym->args.array.count]->next == argv[argc])))))                /* or we just have an empty variadic list */
         {
@@ -3275,13 +3274,12 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
         }
 
         /* special case of ", ## <vargs>" */
-        if ((p->type == LCC_TK_OPERATOR) &&                             /* first token must be an operator */
-            (p->operator == LCC_OP_COMMA) &&                            /* which must be "," operator */
-            (p->next->type == LCC_TK_OPERATOR) &&                       /* second token must also be an operator */
-            (p->next->operator == LCC_OP_CONCAT) &&                     /* which must be "##" operator */
-            (p->next->next->type == LCC_TK_IDENT) &&                    /* third token must be an identifier */
-            (p->next->next->ident->len == sym->vaname->len) &&          /* which must have the same length */
-            !(strcmp(p->next->next->ident->buf, sym->vaname->buf)))     /* and same characters with variadic argument name */
+        if ((p->type == LCC_TK_OPERATOR) &&                         /* first token must be an operator */
+            (p->operator == LCC_OP_COMMA) &&                        /* which must be "," operator */
+            (p->next->type == LCC_TK_OPERATOR) &&                   /* second token must also be an operator */
+            (p->next->operator == LCC_OP_CONCAT) &&                 /* which must be "##" operator */
+            (p->next->next->type == LCC_TK_IDENT) &&                /* third token must be an identifier */
+            lcc_string_equals(p->next->next->ident, sym->vaname))   /* and is same with variadic argument name */
         {
             /* remove the "," if <vargs> is empty */
             if (argc == sym->args.array.count)
@@ -3301,9 +3299,26 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
         if ((p->type == LCC_TK_OPERATOR) &&
             (p->operator == LCC_OP_STRINGIZE))
         {
-            /* must be an argument after "#" */
-            if ((p->next->type != LCC_TK_IDENT) ||
-                ((n = lcc_string_array_index(&(sym->args), p->next->ident)) < 0))
+            /* must be an identifier after "#" */
+            if (p->next->type != LCC_TK_IDENT)
+            {
+                _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
+                return 0;
+            }
+
+            /* it's an argument */
+            if ((n = lcc_string_array_index(&(sym->args), p->next->ident)) >= 0)
+                m = n + 1;
+
+            /* variadic argument */
+            else if (lcc_string_equals(p->next->ident, sym->vaname))
+            {
+                m = argc;
+                n = sym->args.array.count;
+            }
+
+            /* otherwise it's an error */
+            else
             {
                 _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
                 return 0;
@@ -3315,7 +3330,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
             lcc_string_t *s;
 
             /* concat each part of token strings */
-            while (t != argv[n + 1])
+            while (t != argv[m])
             {
                 lcc_string_append(v, t->src);
                 t = t->next;
@@ -4296,8 +4311,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                     if (p->operator == LCC_OP_STRINGIZE)
                     {
                         /* must be an argument after "#" */
-                        if ((p->next->type != LCC_TK_IDENT) ||
-                            ((n = lcc_string_array_index(&(sym.args), p->next->ident)) < 0))
+                        if (p->next->type != LCC_TK_IDENT)
                         {
                             _lcc_sym_free(&sym);
                             _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
@@ -4305,7 +4319,8 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                         }
 
                         /* mark as not-expand */
-                        sym.nx[n / 64] |= (1 << (n % 64));
+                        if ((n = lcc_string_array_index(&(sym.args), p->next->ident)) >= 0)
+                            sym.nx[n / 64] |= (1 << (n % 64));
                     }
 
                     /* mark identifier before and after "##" as not-expand (NX) */
