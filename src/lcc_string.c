@@ -14,6 +14,14 @@ void lcc_string_unref(lcc_string_t *self)
     }
 }
 
+char lcc_string_equals(lcc_string_t *self, lcc_string_t *other)
+{
+    if (self == other)
+        return 1;
+    else
+        return (self->len == other->len) && !(strcmp(self->buf, other->buf));
+}
+
 lcc_string_t *lcc_string_ref(lcc_string_t *self)
 {
     self->ref++;

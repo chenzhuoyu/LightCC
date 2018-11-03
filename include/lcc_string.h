@@ -12,6 +12,8 @@ typedef struct _lcc_string_t
 } lcc_string_t;
 
 void lcc_string_unref(lcc_string_t *self);
+char lcc_string_equals(lcc_string_t *self, lcc_string_t *other);
+
 lcc_string_t *lcc_string_ref(lcc_string_t *self);
 lcc_string_t *lcc_string_copy(lcc_string_t *self);
 lcc_string_t *lcc_string_trim(lcc_string_t *self);

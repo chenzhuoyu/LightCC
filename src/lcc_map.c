@@ -205,7 +205,7 @@ char lcc_map_get(lcc_map_t *self, lcc_string_t *key, void **data)
     return 1;
 }
 
-char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *new)
+char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *data, const void *new)
 {
     /* lookup node in bucket */
     long hash;
@@ -214,13 +214,13 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *ne
     /* found in bucket */
     if (node)
     {
-        /* destroy the old value */
-        if (self->dtor_fn)
-            self->dtor_fn(self, node->value, self->dtor_data);
-
         /* retain the value address as needed */
         if (data)
-            *data = node->value;
+            memcpy(data, node->value, self->value_size);
+
+        /* destroy the old value */
+        else if (self->dtor_fn)
+            self->dtor_fn(self, node->value, self->dtor_data);
 
         /* replace the value */
         memcpy(node->value, new, self->value_size);
@@ -246,7 +246,7 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *ne
     {
         /* use empty node or reuse deleted node */
         if ((self->bucket[index].flags == 0) ||
-            (self->bucket[index].flags == LCC_MAP_FLAGS_DEL))
+            (self->bucket[index].flags & LCC_MAP_FLAGS_DEL))
         {
             node = &(self->bucket[index]);
             break;
@@ -271,10 +271,6 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void **data, const void *ne
     node->value = malloc(self->value_size);
     memcpy(node->value, new, self->value_size);
 
-    /* retain the value address as needed */
-    if (data)
-        *data = node->value;
-
     /* update node counter */
     self->count++;
     return 0;
@@ -296,7 +292,7 @@ char lcc_map_get_string(lcc_map_t *self, const char *key, void **data)
     return ret;
 }
 
-char lcc_map_set_string(lcc_map_t *self, const char *key, void **data, const void *new)
+char lcc_map_set_string(lcc_map_t *self, const char *key, void *data, const void *new)
 {
     lcc_string_t *k = lcc_string_from(key);
     char ret = lcc_map_set(self, k, data, new);

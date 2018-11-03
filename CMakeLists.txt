@@ -12,6 +12,7 @@ set(LIGHTCC
         include/lcc_map.h
         include/lcc_string.h
         include/lcc_string_array.h
+        include/lcc_utils.h
         src/lcc_array.c
         src/lcc_lexer.c
         src/lcc_map.c

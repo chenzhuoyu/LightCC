@@ -6,6 +6,7 @@
 
 #include "lcc_map.h"
 #include "lcc_array.h"
+#include "lcc_utils.h"
 #include "lcc_string.h"
 #include "lcc_string_array.h"
 
@@ -171,6 +172,7 @@ void lcc_token_free(lcc_token_t *self);
 void lcc_token_init(lcc_token_t *self);
 void lcc_token_clear(lcc_token_t *self);
 void lcc_token_attach(lcc_token_t *self, lcc_token_t *next);
+char lcc_token_equals(lcc_token_t *self, lcc_token_t *other);
 
 lcc_token_t *lcc_token_new(void);
 lcc_token_t *lcc_token_copy(lcc_token_t *self);
@@ -180,6 +182,7 @@ lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident);
 lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword);
 lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator);
 
+lcc_token_t *lcc_token_from_int(intmax_t value);
 lcc_token_t *lcc_token_from_raw(lcc_string_t *src, lcc_string_t *value);
 lcc_token_t *lcc_token_from_char(lcc_string_t *src, lcc_string_t *value, char allow_gnuext);
 lcc_token_t *lcc_token_from_string(lcc_string_t *src, lcc_string_t *value, char allow_gnuext);
@@ -194,6 +197,7 @@ lcc_string_t *lcc_token_repr(lcc_token_t *self);
 /*** Source File ***/
 
 #define LCC_FF_LNODIR           0x00000001      /* no compiler directive is allowed on this line */
+#define LCC_FF_SYS              0x00000002      /* built-in pre-included definations */
 #define LCC_FF_INVALID          0x80000000      /* this file object is invalid */
 
 typedef struct _lcc_file_t
@@ -310,14 +314,12 @@ typedef enum _lcc_lexer_condition_state_t
     LCC_LX_CONDSTATE_EL,
     LCC_LX_CONDSTATE_ELS,
     LCC_LX_CONDSTATE_ELSE,
-    LCC_LX_CONDSTATE_ELSE_COMMIT,
     LCC_LX_CONDSTATE_ELI,
     LCC_LX_CONDSTATE_ELIF,
     LCC_LX_CONDSTATE_EN,
     LCC_LX_CONDSTATE_END,
     LCC_LX_CONDSTATE_ENDI,
     LCC_LX_CONDSTATE_ENDIF,
-    LCC_LX_CONDSTATE_ENDIF_COMMIT,
     LCC_LX_CONDSTATE_I,
     LCC_LX_CONDSTATE_IF,
     LCC_LX_CONDSTATE_IFN,
@@ -375,6 +377,7 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXDF_DEFINE_NVAR    0x0000000010000000      /* named variadic arguments */
 #define LCC_LXDF_DEFINE_FINE    0x0000000020000000      /* macro is been checked */
 #define LCC_LXDF_DEFINE_USING   0x0000000040000000      /* macro is been using */
+#define LCC_LXDF_DEFINE_SYS     0x0000000080000000      /* built-in macro */
 #define LCC_LXDF_DEFINE_MASK    0x00000000ff000000      /* #define directive flags mask */
 
 #define LCC_LXDF_INCLUDE_SYS    0x0000000100000000      /* #include includes file from system headers */
@@ -396,6 +399,7 @@ typedef struct _lcc_lexer_t
     lcc_lexer_substate_t substate;
     lcc_lexer_define_state_t defstate;
     lcc_lexer_condition_state_t condstate;
+    lcc_lexer_condition_state_t savestate;
 
     /* complex state buffers */
     size_t cond_level;
@@ -434,7 +438,9 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file);
 lcc_token_t *lcc_lexer_next(lcc_lexer_t *self);
 lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self);
 
-void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value);
+void lcc_lexer_undef(lcc_lexer_t *self, const char *name);
+void lcc_lexer_define(lcc_lexer_t *self, const char *name, const char *value);
+
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);
 void lcc_lexer_add_library_path(lcc_lexer_t *self, const char *path);
 

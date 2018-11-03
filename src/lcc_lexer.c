@@ -1,3 +1,4 @@
+#include <time.h>
 #include <ctype.h>
 #include <errno.h>
 #include <libgen.h>
@@ -112,7 +113,7 @@ static lcc_string_t *_lcc_string_eval(lcc_string_t *self, char allow_gnuext)
 
     /* end the result string */
     *q = 0;
-    self->len = q - p;
+    self->len = q - self->buf;
     return self;
 }
 
@@ -168,8 +169,8 @@ void lcc_token_free(lcc_token_t *self)
                 break;
         }
 
-        lcc_token_detach(self);
         lcc_string_unref(self->src);
+        lcc_token_detach(self);
         free(self);
     }
 }
@@ -199,6 +200,56 @@ void lcc_token_attach(lcc_token_t *self, lcc_token_t *tail)
     tail->prev = self->prev;
     self->prev->next = tail;
     self->prev = tail;
+}
+
+char lcc_token_equals(lcc_token_t *self, lcc_token_t *other)
+{
+    /* identity check */
+    if (self == other)
+        return 1;
+
+    /* type check */
+    if (self->type != other->type)
+        return 0;
+
+    /* value check */
+    switch (self->type)
+    {
+        /* simple tokens */
+        case LCC_TK_EOF     : return 1;
+        case LCC_TK_KEYWORD : return self->keyword == other->keyword;
+        case LCC_TK_OPERATOR: return self->operator == other->operator;
+        case LCC_TK_IDENT   : return lcc_string_equals(self->ident, other->ident);
+
+        /* literals */
+        case LCC_TK_LITERAL:
+        {
+            /* literal type check */
+            if (self->literal.type != other->literal.type)
+                return 0;
+
+            /* literal value check */
+            switch (self->literal.type)
+            {
+                /* primitive types */
+                case LCC_LT_INT         : return self->literal.v_int        == other->literal.v_int;
+                case LCC_LT_LONG        : return self->literal.v_long       == other->literal.v_long;
+                case LCC_LT_LONGLONG    : return self->literal.v_longlong   == other->literal.v_longlong;
+                case LCC_LT_UINT        : return self->literal.v_uint       == other->literal.v_uint;
+                case LCC_LT_ULONG       : return self->literal.v_ulong      == other->literal.v_ulong;
+                case LCC_LT_ULONGLONG   : return self->literal.v_ulonglong  == other->literal.v_ulonglong;
+                case LCC_LT_FLOAT       : return self->literal.v_float      == other->literal.v_float;
+                case LCC_LT_DOUBLE      : return self->literal.v_double     == other->literal.v_double;
+                case LCC_LT_LONGDOUBLE  : return self->literal.v_longdouble == other->literal.v_longdouble;
+
+                /* sequence types */
+                case LCC_LT_CHAR        : return lcc_string_equals(self->literal.v_char, other->literal.v_char);
+                case LCC_LT_STRING      : return lcc_string_equals(self->literal.v_string, other->literal.v_string);
+            }
+        }
+    }
+
+    abort();
 }
 
 lcc_token_t *lcc_token_new(void)
@@ -325,6 +376,20 @@ lcc_token_t *lcc_token_from_operator(lcc_string_t *src, lcc_operator_t operator)
     self->next = self;
     self->type = LCC_TK_OPERATOR;
     self->operator = operator;
+    return self;
+}
+
+lcc_token_t *lcc_token_from_int(intmax_t value)
+{
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    self->ref = 0;
+    self->src = lcc_string_from_format("%li", value);
+    self->prev = self;
+    self->next = self;
+    self->type = LCC_TK_LITERAL;
+    self->literal.raw = lcc_string_from_format("%li", value);
+    self->literal.type = LCC_LT_LONGLONG;
+    self->literal.v_longlong = value;
     return self;
 }
 
@@ -725,6 +790,12 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 #define _LCC_MAX_MACRO_ARGS     65536
 #define _LCC_MAX_MACRO_NBMP     (_LCC_MAX_MACRO_ARGS / (sizeof(uint64_t) * 8))
 
+typedef char (_lcc_macro_extension_fn)(
+    lcc_lexer_t *self,
+    lcc_token_t **begin,
+    lcc_token_t *end
+);
+
 typedef struct __lcc_sym_t
 {
     long flags;
@@ -733,7 +804,14 @@ typedef struct __lcc_sym_t
     lcc_string_t *name;
     lcc_string_t *vaname;
     lcc_string_array_t args;
+    _lcc_macro_extension_fn *ext;
 } _lcc_sym_t;
+
+typedef struct __lcc_value_t
+{
+    char discard;
+    intmax_t value;
+} _lcc_val_t;
 
 typedef struct __lcc_keyword_item_t
 {
@@ -956,6 +1034,10 @@ static inline void _lcc_commit_chars(lcc_lexer_t *self, char keep_tail)
         (self->gnuext & LCC_LX_GNUX_ESCAPE_CHAR) != 0
     );
 
+    /* check for multi-character constant */
+    if (token->literal.v_char->len > 1)
+        _lcc_lexer_warning(self, "Multi-character character constant");
+
     /* attach to token chain */
     lcc_token_attach(&(self->tokens), token);
     lcc_token_buffer_reset(&(self->token_buffer));
@@ -1001,11 +1083,24 @@ static inline void _lcc_commit_operator(lcc_lexer_t *self, lcc_operator_t operat
 
 static void _lcc_sym_free(_lcc_sym_t *self)
 {
+    /* extensions have no body */
+    if (self->body)
+        lcc_token_clear(self->body);
+
+    /* extensions have no variadic argument name either */
+    if (self->vaname)
+        lcc_string_unref(self->vaname);
+
+    /* clear other fields */
     free(self->nx);
-    lcc_token_clear(self->body);
     lcc_string_unref(self->name);
-    lcc_string_unref(self->vaname);
     lcc_string_array_free(&(self->args));
+}
+
+static void _lcc_file_free(lcc_file_t *self)
+{
+    lcc_string_unref(self->name);
+    lcc_string_array_free(&(self->lines));
 }
 
 static void _lcc_handle_substate(lcc_lexer_t *self)
@@ -2103,13 +2198,13 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
         case LCC_LX_SUBSTATE_OPERATOR_PERCENT : ACCEPT1_OR_KEEP('=', LCC_OP_IMOD, LCC_OP_PERCENT)   /* % %= */
         case LCC_LX_SUBSTATE_OPERATOR_EQU     : ACCEPT1_OR_KEEP('=', LCC_OP_EQ  , LCC_OP_ASSIGN )   /* = == */
         case LCC_LX_SUBSTATE_OPERATOR_EXCL    : ACCEPT1_OR_KEEP('=', LCC_OP_NEQ , LCC_OP_LNOT   )   /* ! != */
-        case LCC_LX_SUBSTATE_OPERATOR_AMP     : ACCEPT1_OR_KEEP('=', LCC_OP_IAND, LCC_OP_BAND   )   /* & &= */
-        case LCC_LX_SUBSTATE_OPERATOR_BAR     : ACCEPT1_OR_KEEP('=', LCC_OP_IOR , LCC_OP_BOR    )   /* | |= */
         case LCC_LX_SUBSTATE_OPERATOR_CARET   : ACCEPT1_OR_KEEP('=', LCC_OP_IXOR, LCC_OP_BXOR   )   /* ^ ^= */
 
         /* one- or two-character and incremental operators */
         case LCC_LX_SUBSTATE_OPERATOR_PLUS    : ACCEPT2_OR_KEEP('+', LCC_OP_INCR, '=', LCC_OP_IADD, LCC_OP_PLUS )   /* + ++ += */
         case LCC_LX_SUBSTATE_OPERATOR_MINUS   : ACCEPT2_OR_KEEP('-', LCC_OP_DECR, '=', LCC_OP_ISUB, LCC_OP_MINUS)   /* - -- -= */
+        case LCC_LX_SUBSTATE_OPERATOR_AMP     : ACCEPT2_OR_KEEP('&', LCC_OP_LAND, '=', LCC_OP_IAND, LCC_OP_BAND )   /* & && &= */
+        case LCC_LX_SUBSTATE_OPERATOR_BAR     : ACCEPT2_OR_KEEP('|', LCC_OP_LOR , '=', LCC_OP_IOR , LCC_OP_BOR  )   /* | || |= */
 
         /* bit-shifting operators */
         case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHR, LCC_OP_BSHR)  /* >> >>= */
@@ -2286,14 +2381,313 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
 #undef _LCC_WRONG_CHAR
 
-static int64_t _lcc_eval_tokens(lcc_lexer_t *self, lcc_token_t *start, lcc_token_t *end)
-{
-    /* empty token expands to 0 */
-    if (start == end)
-        return 0;
+/* evaluator declarations */
 
-    // TODO: eval tokens
-    return 0;
+static char _lcc_eval_factor  (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_term    (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_expr    (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_shift   (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_order   (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_equal   (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_bit_and (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_bit_xor (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_bit_or  (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_bool_and(lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+static char _lcc_eval_bool_or (lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end);
+
+/* evaluator implementations */
+
+#define _LCC_OP_0(op)               _LCC_TUPLE_ITEM_AT(op, 0)
+#define _LCC_OP_1(op)               _LCC_TUPLE_ITEM_AT(op, 1)
+
+#define _LCC_OP_OR_1_I              ()
+#define _LCC_OP_OR_2_I              (||,)
+#define _LCC_OP_OR_3_I              (||, ||,)
+#define _LCC_OP_OR_4_I              (||, ||, ||,)
+#define _LCC_OP_OR_I(n, i)          _LCC_TUPLE_ITEM_AT(_LCC_OP_OR_ ## n ## _I, i)
+#define _LCC_OP_OR(n, i)            _LCC_OP_OR_I(n, i)
+
+#define _LCC_OP_CHECK_I(i, n, op)   _LCC_OP_OR(n, i) ((*token)->operator == _LCC_OP_0(op))
+#define _LCC_OP_CHECK(...)          _LCC_FOR_EACH(_LCC_OP_CHECK_I, _LCC_VA_NARGS(__VA_ARGS__), __VA_ARGS__)
+
+#define _LCC_OP_CASE_I(i, n, op)    case _LCC_OP_0(op): lhs = _LCC_OP_1(op); break;
+#define _LCC_OP_CASE(...)           _LCC_FOR_EACH(_LCC_OP_CASE_I, ?, __VA_ARGS__)
+
+#define _LCC_NZ(val, msg)           ({  \
+    /* check for zero */                \
+    if (!val)                           \
+    {                                   \
+        _lcc_lexer_error(self, #msg);   \
+        return 0;                       \
+    }                                   \
+                                        \
+    /* the verified value */            \
+    rhs;                                \
+})
+
+#define _LCC_SLASH_Z                Division by zero in preprocessor expression
+#define _LCC_PERCENT_Z              Remainder by zero in preprocessor expression
+
+#define _LCC_OP_S(op)               lhs op rhs
+#define _LCC_OP_Z(op, msg)          lhs op _LCC_NZ(rhs, msg)
+#define _LCC_MK_OP(name, op)        (LCC_OP_ ## name, _LCC_OP_S(op))
+#define _LCC_MK_NZ(name, op)        (LCC_OP_ ## name, _LCC_OP_Z(op, _LCC_ ## name ## _Z))
+
+#define _LCC_EVAL_OP(name, super, ...)                                          \
+static char _lcc_eval_ ## name(                                                 \
+    lcc_lexer_t *self,                                                          \
+    intmax_t *result,                                                           \
+    lcc_token_t **token,                                                        \
+    lcc_token_t *end)                                                           \
+{                                                                               \
+    intmax_t lhs;                                                               \
+    intmax_t rhs;                                                               \
+    lcc_operator_t op;                                                          \
+                                                                                \
+    /* evaluate left-hand side operand */                                       \
+    if (!(_lcc_eval_ ## super(self, &lhs, token, end)))                         \
+        return 0;                                                               \
+                                                                                \
+    /* search for every operator */                                             \
+    while ((*token) != end)                                                     \
+    {                                                                           \
+        /* must be an operator */                                               \
+        if ((*token)->type != LCC_TK_OPERATOR)                                  \
+        {                                                                       \
+            _lcc_lexer_error(self, "Invalid preprocessor expression token");    \
+            return 0;                                                           \
+        }                                                                       \
+                                                                                \
+        /* doesn't care other operators */                                      \
+        if (!(_LCC_OP_CHECK(__VA_ARGS__)))                                      \
+            break;                                                              \
+                                                                                \
+        /* skip the operator */                                                 \
+        op = (*token)->operator;                                                \
+        *token = (*token)->next;                                                \
+                                                                                \
+        /* evaluate right-hand side operand */                                  \
+        if (!(_lcc_eval_ ## super(self, &rhs, token, end)))                     \
+            return 0;                                                           \
+                                                                                \
+        /* apply operators */                                                   \
+        switch (op)                                                             \
+        {                                                                       \
+            /* auto-generated cases */                                          \
+            _LCC_OP_CASE(__VA_ARGS__)                                           \
+        }                                                                       \
+    }                                                                           \
+                                                                                \
+    /* evaluation successful */                                                 \
+    *result = lhs;                                                              \
+    return 1;                                                                   \
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch"
+
+_LCC_EVAL_OP(term    , factor  , _LCC_MK_OP(STAR, * ), _LCC_MK_NZ(SLASH, / ), _LCC_MK_NZ(PERCENT, %))
+_LCC_EVAL_OP(expr    , term    , _LCC_MK_OP(PLUS, + ), _LCC_MK_OP(MINUS, - ))
+_LCC_EVAL_OP(shift   , expr    , _LCC_MK_OP(BSHL, <<), _LCC_MK_OP(BSHR , >>))
+_LCC_EVAL_OP(order   , shift   , _LCC_MK_OP(GT  , > ), _LCC_MK_OP(GEQ  , >=), _LCC_MK_OP(LT, <), _LCC_MK_OP(LEQ, <=))
+_LCC_EVAL_OP(equal   , order   , _LCC_MK_OP(EQ  , ==), _LCC_MK_OP(NEQ  , !=))
+_LCC_EVAL_OP(bit_and , equal   , _LCC_MK_OP(BAND, & ))
+_LCC_EVAL_OP(bit_xor , bit_and , _LCC_MK_OP(BXOR, ^ ))
+_LCC_EVAL_OP(bit_or  , bit_xor , _LCC_MK_OP(BOR , | ))
+_LCC_EVAL_OP(bool_and, bit_or  , _LCC_MK_OP(LAND, &&))
+_LCC_EVAL_OP(bool_or , bool_and, _LCC_MK_OP(LOR , ||))
+
+#pragma clang diagnostic pop
+
+#undef _LCC_OP_0
+#undef _LCC_OP_1
+#undef _LCC_OP_OR_1_I
+#undef _LCC_OP_OR_2_I
+#undef _LCC_OP_OR_3_I
+#undef _LCC_OP_OR_4_I
+#undef _LCC_OP_OR_I
+#undef _LCC_OP_OR
+#undef _LCC_OP_CHECK_I
+#undef _LCC_OP_CHECK
+#undef _LCC_OP_CASE_I
+#undef _LCC_OP_CASE
+#undef _LCC_SLASH_Z
+#undef _LCC_PERCENT_Z
+#undef _LCC_OP_S
+#undef _LCC_OP_Z
+#undef _LCC_MK_OP
+#undef _LCC_MK_NZ
+#undef _LCC_EVAL_OP
+
+static char _lcc_eval_factor(lcc_lexer_t *self, intmax_t *result, lcc_token_t **token, lcc_token_t *end)
+{
+    /* must have at least 1 token */
+    if ((*token) == end)
+    {
+        _lcc_lexer_error(self, "Expected value in expression");
+        return 0;
+    }
+
+    /* check for token type */
+    switch ((*token)->type)
+    {
+        /* EOF, should not happen */
+        case LCC_TK_EOF:
+        {
+            fprintf(stderr, "*** FATAL: EOF when parsing factor\n");
+            abort();
+        }
+
+        /* normal macros are been substituted beforewards,
+         * no identifier but undefined one may appear here,
+         * which expands to zero according to the standard */
+        case LCC_TK_IDENT:
+        {
+            /* check for undefined function-like macros */
+            if (((*token)->next != end) &&
+                ((*token)->next->type == LCC_TK_OPERATOR) &&
+                ((*token)->next->operator == LCC_OP_LBRACKET))
+            {
+                _lcc_lexer_error(self, "Function-like macro \"%s\" is not defined", (*token)->ident->buf);
+                return 0;
+            }
+
+            /* undefined object-like macro expands to zero */
+            *token = (*token)->next;
+            *result = 0;
+            break;
+        }
+
+        /* literal constant */
+        case LCC_TK_LITERAL:
+        {
+            /* check for literal type */
+            switch ((*token)->literal.type)
+            {
+                /* integer constants */
+                case LCC_LT_INT       : *result = (intmax_t)((*token)->literal.v_int);       break;
+                case LCC_LT_LONG      : *result = (intmax_t)((*token)->literal.v_long);      break;
+                case LCC_LT_LONGLONG  : *result = (intmax_t)((*token)->literal.v_longlong);  break;
+                case LCC_LT_UINT      : *result = (intmax_t)((*token)->literal.v_uint);      break;
+                case LCC_LT_ULONG     : *result = (intmax_t)((*token)->literal.v_ulong);     break;
+                case LCC_LT_ULONGLONG : *result = (intmax_t)((*token)->literal.v_ulonglong); break;
+
+                /* floating-point numbers are not allowed */
+                case LCC_LT_FLOAT:
+                case LCC_LT_DOUBLE:
+                case LCC_LT_LONGDOUBLE:
+                {
+                    _lcc_lexer_error(self, "Floating-point in preprocessor expression");
+                    return 0;
+                }
+
+                /* character sequence */
+                case LCC_LT_CHAR:
+                {
+                    /* final value and character pointer */
+                    intmax_t val = 0;
+                    lcc_string_t *s = (*token)->literal.v_char;
+
+                    /* convert to integer */
+                    if (s->len <= sizeof(intmax_t))
+                        memcpy(&val, s->buf, s->len);
+                    else
+                        memcpy(&val, s->buf + s->len - sizeof(intmax_t), sizeof(intmax_t));
+
+                    /* skip the literal */
+                    *token = (*token)->next;
+                    *result = val;
+                    break;
+                }
+
+                /* string literals are not allowed either */
+                case LCC_LT_STRING:
+                {
+                    _lcc_lexer_error(self, "Invalid token at start of a preprocessor expression");
+                    return 0;
+                }
+            }
+
+            /* skip the literal */
+            *token = (*token)->next;
+            break;
+        }
+
+        /* keywords are generated after preprocessing,
+         * thus must not appear here, or something went wrong */
+        case LCC_TK_KEYWORD:
+        {
+            fprintf(stderr, "*** FATAL: keywords in preprocessor tokens\n");
+            abort();
+        }
+
+        /* maybe prefix operators */
+        case LCC_TK_OPERATOR:
+        {
+            /* save operator first */
+            intmax_t val;
+            lcc_operator_t op = (*token)->operator;
+
+            /* skip the operator first */
+            val = 0;
+            *token = (*token)->next;
+
+            /* check for sub-expression */
+            if (op == LCC_OP_LBRACKET)
+            {
+                /* evaluate sub-expression */
+                if (!(_lcc_eval_bool_or(self, result, token, end)))
+                    return 0;
+
+                /* should ends with ")" */
+                if (((*token) == end) ||
+                    ((*token)->type != LCC_TK_OPERATOR) ||
+                    ((*token)->operator != LCC_OP_RBRACKET))
+                {
+                    _lcc_lexer_error(self, "Expected ')' in preprocessor expression");
+                    return 0;
+                }
+
+                /* skip the ")" */
+                *token = (*token)->next;
+                break;
+            }
+
+            /* evaluate sub-factor */
+            if (!(_lcc_eval_factor(self, &val, token, end)))
+                return 0;
+
+            /* apply operators */
+            switch (op)
+            {
+                /* four possible unary operators */
+                case LCC_OP_PLUS : break;
+                case LCC_OP_MINUS: val = -val; break;
+                case LCC_OP_BINV : val = ~val; break;
+                case LCC_OP_LNOT : val = !val; break;
+
+                /* other operators are not allowed */
+                default:
+                {
+                    _lcc_lexer_error(self, "Invalid token at start of a preprocessor expression");
+                    return 0;
+                }
+            }
+
+            /* store the result */
+            *result = val;
+            break;
+        }
+    }
+
+    /* evaluation successful */
+    return 1;
+}
+
+static char _lcc_eval_tokens(lcc_lexer_t *self, intmax_t *result)
+{
+    lcc_token_t *token = self->tokens.next;
+    return _lcc_eval_bool_or(self, result, &token, &(self->tokens));
 }
 
 #define _LCC_FETCH_TOKEN(self, efmt, ...)                   \
@@ -2361,7 +2755,7 @@ static int64_t _lcc_eval_tokens(lcc_lexer_t *self, lcc_token_t *start, lcc_token
     }                                                       \
 })
 
-static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path)
+static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path, char check_only)
 {
     /* try load the file */
     char *name = path->buf;
@@ -2370,6 +2764,13 @@ static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path)
     /* check if it is loaded */
     if (file.flags & LCC_FF_INVALID)
         return 0;
+
+    /* don't actually load under "check only" mode */
+    if (check_only)
+    {
+        _lcc_file_free(&file);
+        return 1;
+    }
 
     /* push to file stack */
     lcc_array_append(&(self->files), &file);
@@ -2451,7 +2852,7 @@ static inline lcc_string_t *_lcc_path_dirname(lcc_string_t *name)
     return ret;
 }
 
-static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
+static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname, char check_only)
 {
     /* for "#include_next" support */
     char load = 1;
@@ -2460,9 +2861,21 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
     dev_t fdev = 0;
     ino_t fino = 0;
 
+    /* check file path for "#include_next" */
+    if ((fname->buf[0] == '/') &&
+        (self->flags & LCC_LXDF_INCLUDE_NEXT))
+    {
+        self->flags &= ~LCC_LXDF_INCLUDE_NEXT;
+        _lcc_lexer_warning(self, "#include_next with absolute path");
+    }
+
     /* check for "#include_next" */
     if (self->flags & LCC_LXDF_INCLUDE_NEXT)
     {
+        /* check file stack */
+        if (self->files.count == 1)
+            _lcc_lexer_warning(self, "#include_next in primary source file");
+
         /* calculate include path from current file */
         struct stat st = {};
         lcc_string_t *dir = _lcc_path_dirname(self->file->name);
@@ -2470,6 +2883,14 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
         /* try to read it's info */
         if (stat(dir->buf, &st))
         {
+            /* errors are muted under "check only" mode */
+            if (check_only)
+            {
+                lcc_string_unref(dir);
+                return 0;
+            }
+
+            /* otherwise raise error as intended */
             _lcc_lexer_error(self, "Cannot read directory \"%s\": [%d] %s", dir->buf, errno, strerror(errno));
             lcc_string_unref(dir);
             return 0;
@@ -2498,7 +2919,7 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
         if (_lcc_file_exists(path))
         {
             found = 1;
-            loaded = _lcc_push_file(self, path);
+            loaded = _lcc_push_file(self, path, check_only);
         }
 
         /* release the strings */
@@ -2508,6 +2929,11 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
         /* found, but not loaded, it's an error */
         if (found && !loaded)
         {
+            /* errors are muted under "check only" mode */
+            if (check_only)
+                return 0;
+
+            /* otherwise raise error as intended */
             _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
             return 0;
         }
@@ -2550,7 +2976,7 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
             if (_lcc_file_exists(path))
             {
                 found = 1;
-                loaded = _lcc_push_file(self, path);
+                loaded = _lcc_push_file(self, path, check_only);
             }
         }
 
@@ -2561,6 +2987,11 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
         /* found, but not loaded, it's an error */
         if (found && !loaded)
         {
+            /* errors are muted under "check only" mode */
+            if (check_only)
+                return 0;
+
+            /* otherwise raise error as intended */
             _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
             return 0;
         }
@@ -2570,12 +3001,16 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname)
     if (found)
         return 1;
 
+    /* errors are muted under "check only" mode */
+    if (check_only)
+        return 0;
+
     /* still not found, it's an error */
     _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, ENOENT, strerror(ENOENT));
     return 0;
 }
 
-static lcc_token_t *_lcc_next_arg(lcc_token_t *begin, lcc_token_t *end)
+static lcc_token_t *_lcc_next_arg(lcc_token_t *begin, lcc_token_t *end, char allow_comma)
 {
     /* parentheses nesting level */
     size_t level = 0;
@@ -2589,8 +3024,13 @@ static lcc_token_t *_lcc_next_arg(lcc_token_t *begin, lcc_token_t *end)
         {
             /* checking for matched parentheses */
             if ((level == 0) &&
-                ((last->operator == LCC_OP_COMMA) ||
-                 (last->operator == LCC_OP_RBRACKET)))
+                (last->operator == LCC_OP_RBRACKET))
+                return last;
+
+            /* checking for comma delimiter */
+            if (allow_comma &&
+                (level == 0) &&
+                (last->operator == LCC_OP_COMMA))
                 return last;
 
             /* parentheses matching */
@@ -2897,7 +3337,7 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
     return _lcc_macro_cat(self, head->next, head);
 }
 
-static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end)
+static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end, char *has_defined)
 {
     /* first token */
     _lcc_sym_t *sym;
@@ -2907,12 +3347,24 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
     /* scan every token */
     while (token != end)
     {
-        /* must be a valid macro name, otherwise ignore it */
-        if ((token->type != LCC_TK_IDENT) ||
-            !(lcc_map_get(&(self->psyms), token->ident, (void **)&sym)))
+        /* must be a valid macro */
+        if ((token->type != LCC_TK_IDENT) ||                                /* must be an identifier */
+            !(lcc_map_get(&(self->psyms), token->ident, (void **)&sym)) ||  /* must be defined */
+            ((sym->flags & LCC_LXDF_DEFINE_SYS) &&                          /* special case of builtin macros */
+             !(strcmp(sym->name->buf, "defined")) &&                        /* actually, "defined" macro */
+             !(self->flags & (LCC_LXDN_IF | LCC_LXDN_ELIF))))               /* only available in "#if" or "#elif" */
         {
             token = token->next;
             continue;
+        }
+
+        /* call the extension if any */
+        if (sym->ext)
+        {
+            if (!(sym->ext(self, &token, end)))
+                return 0;
+            else
+                continue;
         }
 
         /* object-like macro */
@@ -2936,7 +3388,7 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
 
             /* handle concatenation */
             if (!(_lcc_macro_cat(self, token, next)))
-                return;
+                return 0;
         }
         else
         {
@@ -2959,7 +3411,7 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
                 if ((start = start->next) == end)
                 {
                     _lcc_lexer_error(self, "Unterminated function-like macro invocation");
-                    return;
+                    return 0;
                 }
             }
 
@@ -2979,11 +3431,11 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
             do
             {
                 /* find next end of argument */
-                if (!(delim = _lcc_next_arg(start, end)))
+                if (!(delim = _lcc_next_arg(start, end, 1)))
                 {
                     free(argvp);
                     _lcc_lexer_error(self, "Unterminated function-like macro invocation");
-                    return;
+                    return 0;
                 }
 
                 /* expand argument buffer as needed */
@@ -2994,11 +3446,15 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
                 }
 
                 /* expand as needed */
-                if (!(start->ref) &&                                /* must not be self-ref macro */
-                    !(sym->flags & LCC_LXDF_DEFINE_USING) &&        /* must not be recursive-ref macro */
-                    ((argp >= sym->args.array.count) ||             /* could be an argument in variadic arguments */
-                     !(sym->nx[argp / 64] & (1 << (argp % 64)))))   /* or "not-expand" bit not set for this argument */
-                    _lcc_macro_subst(self, start, delim);
+                if (!(start->ref) &&                                        /* must not be self-ref macro */
+                    !(sym->flags & LCC_LXDF_DEFINE_USING) &&                /* must not be recursive-ref macro */
+                    ((argp >= sym->args.array.count) ||                     /* could be an argument in variadic arguments */
+                     !(sym->nx[argp / 64] & (1 << (argp % 64)))) &&         /* or "not-expand" bit not set for this argument */
+                    !(_lcc_macro_scan(self, start, delim, has_defined)))    /* then perform substitution on this argument */
+                {
+                    free(argvp);
+                    return 0;
+                }
 
                 /* skip the comma */
                 start = delim->next;
@@ -3019,7 +3475,7 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
             {
                 free(argvp);
                 _lcc_lexer_error(self, "Too few arguments provided to function-like macro invocation");
-                return;
+                return 0;
             }
 
             /* too many arguments */
@@ -3028,7 +3484,7 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
             {
                 free(argvp);
                 _lcc_lexer_error(self, "Too many arguments provided to function-like macro invocation");
-                return;
+                return 0;
             }
 
             /* don't expand self-ref macros */
@@ -3045,7 +3501,7 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
             {
                 free(argvp);
                 lcc_token_clear(head);
-                return;
+                return 0;
             }
 
             /* out with the original tokens */
@@ -3061,12 +3517,54 @@ static void _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t 
             lcc_token_clear(head);
         }
 
-        /* scan again for nested macros */
+        /* check the substitution result as needed */
+        if (!(*has_defined))
+        {
+            /* scan every token */
+            for (lcc_token_t *p = token; p != next; p = p->next)
+            {
+                /* check for expanded "defined" macro */
+                if ((p->type == LCC_TK_IDENT) && !(strcmp(p->ident->buf, "defined")))
+                {
+                    *has_defined = 1;
+                    break;
+                }
+            }
+        }
+
+        /* move one token backward to prevent dangling pointer */
+        token = token->prev;
         sym->flags |= LCC_LXDF_DEFINE_USING;
-        _lcc_macro_subst(self, token, next);
-        sym->flags &= ~LCC_LXDF_DEFINE_USING;
+
+        /* scan again for nested macros */
+        if (!(_lcc_macro_scan(self, token->next, next, has_defined)))
+        {
+            sym->flags &= ~LCC_LXDF_DEFINE_USING;
+            return 0;
+        }
+
+        /* move to next token */
         token = next;
+        sym->flags &= ~LCC_LXDF_DEFINE_USING;
     }
+
+    /* substitution successful */
+    return 1;
+}
+
+static char _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end)
+{
+    /* evaluate the macro */
+    char warn = 0;
+    char result = _lcc_macro_scan(self, begin, end, &warn);
+
+    /* check for warnings */
+    if (!warn)
+        return result;
+
+    /* throw out the warning */
+    _lcc_lexer_warning(self, "Macro expansion producing 'defined' has undefined behavior");
+    return result;
 }
 
 static void _lcc_handle_define(lcc_lexer_t *self)
@@ -3259,22 +3757,27 @@ static void _lcc_handle_condition(lcc_lexer_t *self)
     }
 
     /* end of line encountered, reset state if needed */
-    if (self->flags & LCC_LXF_EOL)
+    while (self->flags & LCC_LXF_EOL)
     {
         /* check for current status */
         switch (self->condstate)
         {
+            /* idle state */
+            case LCC_LX_CONDSTATE_IDLE:
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NULL;
+                return;
+            }
+
             /* "#else" */
             case LCC_LX_CONDSTATE_ELSE:
-            case LCC_LX_CONDSTATE_ELSE_COMMIT:
             {
                 /* not on root level */
                 if (self->cond_level != 1)
                 {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_NULL;
                     self->condstate = LCC_LX_CONDSTATE_IDLE;
-                    return;
+                    break;
                 }
 
                 /* insert an "#else" preprocessor directive */
@@ -3289,15 +3792,12 @@ static void _lcc_handle_condition(lcc_lexer_t *self)
 
             /* "#endif" */
             case LCC_LX_CONDSTATE_ENDIF:
-            case LCC_LX_CONDSTATE_ENDIF_COMMIT:
             {
                 /* not on root level */
                 if (--self->cond_level)
                 {
-                    self->state = LCC_LX_STATE_SHIFT;
-                    self->substate = LCC_LX_SUBSTATE_NULL;
                     self->condstate = LCC_LX_CONDSTATE_IDLE;
-                    return;
+                    break;
                 }
 
                 /* insert an "#endif" preprocessor directive */
@@ -3310,301 +3810,333 @@ static void _lcc_handle_condition(lcc_lexer_t *self)
                 return;
             }
 
+            /* "#ifdef" or "#ifndef" */
+            case LCC_LX_CONDSTATE_IFDEF:
+            {
+                _lcc_lexer_error(self, "Missing macro name");
+                return;
+            }
+
             /* new-line is permitted in block comments */
             case LCC_LX_CONDSTATE_BLOCK_COMMENT:
             case LCC_LX_CONDSTATE_BLOCK_COMMENT_END:
             {
                 self->state = LCC_LX_STATE_SHIFT;
                 self->substate = LCC_LX_SUBSTATE_NULL;
+                self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT;
                 return;
             }
 
             /* reset state for other status */
             default:
             {
-                self->state = LCC_LX_STATE_SHIFT;
-                self->substate = LCC_LX_SUBSTATE_NULL;
-                self->condstate = LCC_LX_CONDSTATE_IDLE;
-                return;
+                self->condstate = self->savestate;
+                self->savestate = LCC_LX_CONDSTATE_IDLE;
+                break;
             }
         }
     }
 
     /* check condition state */
-    switch (self->condstate)
+    while (1)
     {
-        /* idle state, drop characters as needed */
-        case LCC_LX_CONDSTATE_IDLE:
+        char again = 0;
+        switch (self->condstate)
         {
-            switch (self->ch)
+            /* idle state, drop characters as needed */
+            case LCC_LX_CONDSTATE_IDLE:
             {
-                /* "/" or "#" encountered */
-                case '/': self->condstate = LCC_LX_CONDSTATE_SLASH; break;
-                case '#': self->condstate = LCC_LX_CONDSTATE_DIRECTIVE; break;
-
-                /* other characters */
-                default:
+                switch (self->ch)
                 {
-                    /* not a space, this is a normal source line */
-                    if (!(isspace(self->ch)))
-                        self->condstate = LCC_LX_CONDSTATE_SOURCE;
+                    /* "/" or "#" encountered */
+                    case '/': self->condstate = LCC_LX_CONDSTATE_SLASH; break;
+                    case '#': self->condstate = LCC_LX_CONDSTATE_DIRECTIVE; break;
 
-                    break;
+                    /* other characters */
+                    default:
+                    {
+                        /* not a space, this is a normal source line */
+                        if (!(isspace(self->ch)))
+                            self->condstate = LCC_LX_CONDSTATE_SOURCE;
+
+                        break;
+                    }
                 }
+
+                /* IDLE state can only be transfered to SOURCE state */
+                self->savestate = LCC_LX_CONDSTATE_SOURCE;
+                break;
             }
 
-            break;
-        }
-
-        /* "/" encountered, maybe line comment or block comment */
-        case LCC_LX_CONDSTATE_SLASH:
-        {
-            switch (self->ch)
-            {
-                case '/': self->condstate = LCC_LX_CONDSTATE_LINE_COMMENT; break;
-                case '*': self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT; break;
-                default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
-            }
-
-            break;
-        }
-
-        /* normal source line */
-        case LCC_LX_CONDSTATE_SOURCE:
-        {
             /* "/" encountered, maybe line comment or block comment */
-            if (self->ch == '/')
-                self->condstate = LCC_LX_CONDSTATE_SLASH;
-
-            break;
-        }
-
-        /* "#" encountered, maybe a directive */
-        case LCC_LX_CONDSTATE_DIRECTIVE:
-        {
-            switch (self->ch)
+            case LCC_LX_CONDSTATE_SLASH:
             {
-                /* "e" or "i" encountered */
-                case 'e': self->condstate = LCC_LX_CONDSTATE_E; break;
-                case 'i': self->condstate = LCC_LX_CONDSTATE_I; break;
-
-                /* other characters */
-                default:
+                switch (self->ch)
                 {
-                    /* not a space, this is a normal source line */
-                    if (!(isspace(self->ch)))
-                        self->condstate = LCC_LX_CONDSTATE_SOURCE;
+                    /* line comments or block comments */
+                    case '/': self->condstate = LCC_LX_CONDSTATE_LINE_COMMENT; break;
+                    case '*': self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT; break;
 
-                    break;
+                    /* everything else */
+                    default:
+                    {
+                        again = 1;
+                        self->condstate = self->savestate;
+                        break;
+                    }
                 }
-            }
 
-            break;
-        }
-
-        /* line comment, keep this state until next line */
-        case LCC_LX_CONDSTATE_LINE_COMMENT:
-            break;
-
-        /* block comment, check for "*" character */
-        case LCC_LX_CONDSTATE_BLOCK_COMMENT:
-        {
-            /* "*" encountered, maybe end of block comment */
-            if (self->ch == '*')
-                self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT_END;
-
-            break;
-        }
-
-        /* maybe end of block comment, only if we meet "/" */
-        case LCC_LX_CONDSTATE_BLOCK_COMMENT_END:
-        {
-            /* "/" encountered, block comment ends here */
-            if (self->ch == '/')
-                self->condstate = LCC_LX_CONDSTATE_SOURCE;
-
-            /* otherwise it's a false trigger, so revert
-             * back to block comment state, but we need to check
-             * such state that have multiple stars before a slash */
-            else if (self->ch != '*')
-                self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT;
-
-            break;
-        }
-
-        /* "#e(ndif|l(se|if))" */
-        case LCC_LX_CONDSTATE_E:
-        {
-            switch (self->ch)
-            {
-                case 'n': self->condstate = LCC_LX_CONDSTATE_EN; break;
-                case 'l': self->condstate = LCC_LX_CONDSTATE_EL; break;
-                default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
-            }
-
-            break;
-        }
-
-        /* "#el(se|if) */
-        case LCC_LX_CONDSTATE_EL:
-        {
-            switch (self->ch)
-            {
-                case 'i': self->condstate = LCC_LX_CONDSTATE_ELI; break;
-                case 's': self->condstate = LCC_LX_CONDSTATE_ELS; break;
-                default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
-            }
-
-            break;
-        }
-
-        /* "#els(e)" */
-        case LCC_LX_CONDSTATE_ELS:
-        {
-            self->condstate = (self->ch == 'e') ? LCC_LX_CONDSTATE_ELSE : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#else" */
-        case LCC_LX_CONDSTATE_ELSE:
-        {
-            self->condstate = isspace(self->ch) ? LCC_LX_CONDSTATE_ELSE_COMMIT : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#eli(f)" */
-        case LCC_LX_CONDSTATE_ELI:
-        {
-            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_ELIF : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#elif" */
-        case LCC_LX_CONDSTATE_ELIF:
-        {
-            /* should be a space character */
-            if (!(isspace(self->ch)) || (self->cond_level != 1))
-            {
-                self->condstate = LCC_LX_CONDSTATE_SOURCE;
                 break;
             }
 
-            /* insert an "#elif" preprocessor directive */
-            self->flags |= LCC_LXF_DIRECTIVE;
-            self->flags |= LCC_LXDN_ELIF;
-            break;
-        }
-
-        /* "#en(dif)" */
-        case LCC_LX_CONDSTATE_EN:
-        {
-            self->condstate = (self->ch == 'd') ? LCC_LX_CONDSTATE_END : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#end(if)" */
-        case LCC_LX_CONDSTATE_END:
-        {
-            self->condstate = (self->ch == 'i') ? LCC_LX_CONDSTATE_ENDI : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#endi(f)" */
-        case LCC_LX_CONDSTATE_ENDI:
-        {
-            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_ENDIF : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#endif" */
-        case LCC_LX_CONDSTATE_ENDIF:
-        {
-            self->condstate = isspace(self->ch) ? LCC_LX_CONDSTATE_ENDIF_COMMIT : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#else" and "#endif" commit */
-        case LCC_LX_CONDSTATE_ELSE_COMMIT:
-        case LCC_LX_CONDSTATE_ENDIF_COMMIT:
-        {
-            /* should be spaces */
-            if (isspace(self->ch))
-                break;
-
-            /* redundent directive parameter */
-            _lcc_lexer_error(self, "Redundent directive parameter");
-            return;
-        }
-
-        /* "#i(f((n)?def)?) */
-        case LCC_LX_CONDSTATE_I:
-        {
-            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_IF : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
-
-        /* "#if((n)?def)?" */
-        case LCC_LX_CONDSTATE_IF:
-        {
-            switch (self->ch)
+            /* normal source line */
+            case LCC_LX_CONDSTATE_SOURCE:
             {
-                /* "d" or "n" encountered */
-                case 'd': self->condstate = LCC_LX_CONDSTATE_IFD; break;
-                case 'n': self->condstate = LCC_LX_CONDSTATE_IFN; break;
-
-                /* other characters */
-                default:
+                /* "/" encountered, maybe line comment or block comment */
+                if (self->ch == '/')
                 {
-                    /* is a space, commit as "#if" */
-                    if (isspace(self->ch))
-                        self->cond_level++;
+                    self->condstate = LCC_LX_CONDSTATE_SLASH;
+                    self->savestate = LCC_LX_CONDSTATE_SOURCE;
+                }
 
-                    /* mark as source line */
+                break;
+            }
+
+            /* "#" encountered, maybe a directive */
+            case LCC_LX_CONDSTATE_DIRECTIVE:
+            {
+                switch (self->ch)
+                {
+                    /* "e" or "i" encountered */
+                    case 'e': self->condstate = LCC_LX_CONDSTATE_E; break;
+                    case 'i': self->condstate = LCC_LX_CONDSTATE_I; break;
+
+                    /* other characters */
+                    default:
+                    {
+                        /* not a space, this is a normal source line */
+                        if (!(isspace(self->ch)))
+                            self->condstate = LCC_LX_CONDSTATE_SOURCE;
+
+                        break;
+                    }
+                }
+
+                break;
+            }
+
+            /* line comment, keep this state until next line */
+            case LCC_LX_CONDSTATE_LINE_COMMENT:
+                break;
+
+            /* block comment, check for "*" character */
+            case LCC_LX_CONDSTATE_BLOCK_COMMENT:
+            {
+                /* "*" encountered, maybe end of block comment */
+                if (self->ch == '*')
+                    self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT_END;
+
+                break;
+            }
+
+            /* maybe end of block comment, only if we meet "/" */
+            case LCC_LX_CONDSTATE_BLOCK_COMMENT_END:
+            {
+                /* "/" encountered, block comment ends here */
+                if (self->ch == '/')
+                    self->condstate = self->savestate;
+
+                /* otherwise it's a false trigger, so revert
+                 * back to block comment state, but we need to check
+                 * such state that have multiple stars before a slash */
+                else if (self->ch != '*')
+                    self->condstate = LCC_LX_CONDSTATE_BLOCK_COMMENT;
+
+                break;
+            }
+
+            /* "#e(ndif|l(se|if))" */
+            case LCC_LX_CONDSTATE_E:
+            {
+                switch (self->ch)
+                {
+                    case 'n': self->condstate = LCC_LX_CONDSTATE_EN; break;
+                    case 'l': self->condstate = LCC_LX_CONDSTATE_EL; break;
+                    default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
+                }
+
+                break;
+            }
+
+            /* "#el(se|if) */
+            case LCC_LX_CONDSTATE_EL:
+            {
+                switch (self->ch)
+                {
+                    case 'i': self->condstate = LCC_LX_CONDSTATE_ELI; break;
+                    case 's': self->condstate = LCC_LX_CONDSTATE_ELS; break;
+                    default : self->condstate = LCC_LX_CONDSTATE_SOURCE; break;
+                }
+
+                break;
+            }
+
+            /* "#els(e)" */
+            case LCC_LX_CONDSTATE_ELS:
+            {
+                self->condstate = (self->ch == 'e') ? LCC_LX_CONDSTATE_ELSE : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* "#eli(f)" */
+            case LCC_LX_CONDSTATE_ELI:
+            {
+                self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_ELIF : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* "#elif" */
+            case LCC_LX_CONDSTATE_ELIF:
+            {
+                /* should be a space character */
+                if (!(isspace(self->ch)) || (self->cond_level != 1))
+                {
                     self->condstate = LCC_LX_CONDSTATE_SOURCE;
                     break;
                 }
+
+                /* insert an "#elif" preprocessor directive */
+                self->flags |= LCC_LXF_DIRECTIVE;
+                self->flags |= LCC_LXDN_ELIF;
+                break;
             }
 
-            break;
-        }
+            /* "#en(dif)" */
+            case LCC_LX_CONDSTATE_EN:
+            {
+                self->condstate = (self->ch == 'd') ? LCC_LX_CONDSTATE_END : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
 
-        /* "#ifn(def)" */
-        case LCC_LX_CONDSTATE_IFN:
-        {
-            self->condstate = (self->ch == 'd') ? LCC_LX_CONDSTATE_IFD : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
+            /* "#end(if)" */
+            case LCC_LX_CONDSTATE_END:
+            {
+                self->condstate = (self->ch == 'i') ? LCC_LX_CONDSTATE_ENDI : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
 
-        /* "#ifd(ef)" or "#ifnd(ef)" */
-        case LCC_LX_CONDSTATE_IFD:
-        {
-            self->condstate = (self->ch == 'e') ? LCC_LX_CONDSTATE_IFDE : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
+            /* "#endi(f)" */
+            case LCC_LX_CONDSTATE_ENDI:
+            {
+                self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_ENDIF : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
 
-        /* "#ifde(f)" or "#ifnde(f)" */
-        case LCC_LX_CONDSTATE_IFDE:
-        {
-            self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_IFDEF : LCC_LX_CONDSTATE_SOURCE;
-            break;
-        }
+            /* "#else" and "#endif" */
+            case LCC_LX_CONDSTATE_ELSE:
+            case LCC_LX_CONDSTATE_ENDIF:
+            {
+                /* should be spaces */
+                if (isspace(self->ch))
+                    break;
 
-        /* "#ifdef" or "#ifndef" */
-        case LCC_LX_CONDSTATE_IFDEF:
-        {
-            /* should have a space */
-            if (isspace(self->ch))
+                /* not even comments */
+                if (self->ch != '/')
+                {
+                    _lcc_lexer_error(self, "Redundent directive parameter");
+                    return;
+                }
+
+                /* go parsing comments */
+                self->savestate = self->condstate;
+                self->condstate = LCC_LX_CONDSTATE_SLASH;
+                break;
+            }
+
+            /* "#i(f((n)?def)?) */
+            case LCC_LX_CONDSTATE_I:
+            {
+                self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_IF : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* "#if((n)?def)?" */
+            case LCC_LX_CONDSTATE_IF:
+            {
+                switch (self->ch)
+                {
+                    /* "d" or "n" encountered */
+                    case 'd': self->condstate = LCC_LX_CONDSTATE_IFD; break;
+                    case 'n': self->condstate = LCC_LX_CONDSTATE_IFN; break;
+
+                    /* other characters */
+                    default:
+                    {
+                        /* is a space, commit as "#if" */
+                        if (isspace(self->ch))
+                            self->cond_level++;
+
+                        /* mark as source line */
+                        self->condstate = LCC_LX_CONDSTATE_SOURCE;
+                        break;
+                    }
+                }
+
+                break;
+            }
+
+            /* "#ifn(def)" */
+            case LCC_LX_CONDSTATE_IFN:
+            {
+                self->condstate = (self->ch == 'd') ? LCC_LX_CONDSTATE_IFD : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* "#ifd(ef)" or "#ifnd(ef)" */
+            case LCC_LX_CONDSTATE_IFD:
+            {
+                self->condstate = (self->ch == 'e') ? LCC_LX_CONDSTATE_IFDE : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* "#ifde(f)" or "#ifnde(f)" */
+            case LCC_LX_CONDSTATE_IFDE:
+            {
+                self->condstate = (self->ch == 'f') ? LCC_LX_CONDSTATE_IFDEF : LCC_LX_CONDSTATE_SOURCE;
+                break;
+            }
+
+            /* "#ifdef" or "#ifndef" */
+            case LCC_LX_CONDSTATE_IFDEF:
+            {
+                /* should have a space */
+                if (isspace(self->ch))
+                    break;
+
+                /* maybe comments */
+                if (self->ch == '/')
+                {
+                    self->condstate = LCC_LX_CONDSTATE_SLASH;
+                    self->savestate = LCC_LX_CONDSTATE_IFDEF;
+                    break;
+                }
+
+                /* mark as source line */
+                self->condstate = LCC_LX_CONDSTATE_SOURCE;
                 self->cond_level++;
-
-            /* mark as source line */
-            self->condstate = LCC_LX_CONDSTATE_SOURCE;
-            break;
+                break;
+            }
         }
-    }
 
-    /* shift next character */
-    self->state = LCC_LX_STATE_SHIFT;
-    self->substate = LCC_LX_SUBSTATE_NULL;
+        /* check for "try again" flag */
+        if (again)
+            continue;
+
+        /* shift next character */
+        self->state = LCC_LX_STATE_SHIFT;
+        self->substate = LCC_LX_SUBSTATE_NULL;
+        break;
+    }
 }
 
 static void _lcc_handle_directive(lcc_lexer_t *self)
@@ -3692,8 +4224,12 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing include file name");
             lcc_string_t *fname = _LCC_ENSURE_RAWSTR(self, token, "Include file name must be a string");
 
+            /* remove the '"' on either side */
+            fname->buf[--fname->len] = 0;
+            memmove(fname->buf, fname->buf + 1, fname->len--);
+
             /* load the include file */
-            if (_lcc_load_include(self, fname))
+            if (_lcc_load_include(self, fname, 0))
             {
                 lcc_token_free(token);
                 break;
@@ -3716,8 +4252,10 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             }
 
             /* create a new symbol */
+            _lcc_sym_t old;
             _lcc_sym_t sym = {
                 .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),
+                .ext = NULL,
                 .body = lcc_token_new(),
                 .name = self->macro_name,
                 .args = self->macro_args,
@@ -3794,10 +4332,46 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 p = p->next;
             }
 
+            /* check for pre-included file */
+            if (self->file->flags & LCC_FF_SYS)
+                sym.flags |= LCC_LXDF_DEFINE_SYS;
+
             /* add to predefined symbols */
-            if (lcc_map_set(&(self->psyms), self->macro_name, NULL, &sym))
+            if (!(lcc_map_set(&(self->psyms), self->macro_name, &old, &sym)))
+                break;
+
+            /* no warnings for system macros overriding user macros */
+            if (sym.flags & LCC_LXDF_DEFINE_SYS)
+            {
+                _lcc_sym_free(&old);
+                break;
+            }
+
+            /* check for built-in macro */
+            if (old.flags & LCC_LXDF_DEFINE_SYS)
+            {
+                _lcc_sym_free(&old);
+                _lcc_lexer_warning(self, "Redefining builtin macro \"%s\"", self->macro_name->buf);
+                break;
+            }
+
+            /* two headers */
+            lcc_token_t *a = sym.body->next;
+            lcc_token_t *b = old.body->next;
+
+            /* compare each token */
+            while ((a != sym.body) && (b != old.body) && lcc_token_equals(a, b))
+            {
+                a = a->next;
+                b = b->next;
+            }
+
+            /* redefine to same token sequence doesn't considered as "macro redefined" */
+            if ((a != sym.body) || (b != old.body))
                 _lcc_lexer_warning(self, "Symbol \"%s\" redefined", self->macro_name->buf);
 
+            /* release the old symbol */
+            _lcc_sym_free(&old);
             break;
         }
 
@@ -3805,14 +4379,31 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_UNDEF:
         {
             /* extract the macro name */
+            _lcc_sym_t sym;
             lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
+            /* check for macro name */
+            if (!(strcmp(macro->buf, "defined")))
+            {
+                lcc_token_free(token);
+                _lcc_lexer_error(self, "\"defined\" is not a valid macro name");
+                return;
+            }
+
             /* undefine the macro */
-            if (!(lcc_map_pop(&(self->psyms), macro, NULL)))
-                _lcc_lexer_warning(self, "Macro \"%s\" was not defined", macro->buf);
+            if (!(lcc_map_pop(&(self->psyms), macro, &sym)))
+            {
+                lcc_token_free(token);
+                break;
+            }
+
+            /* check for macro type */
+            if (sym.flags & LCC_LXDF_DEFINE_SYS)
+                _lcc_lexer_warning(self, "Undefining builtin macro \"%s\"", macro->buf);
 
             /* release the token */
+            _lcc_sym_free(&sym);
             lcc_token_free(token);
             break;
         }
@@ -3821,27 +4412,53 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_IF:
         case LCC_LXDN_ELIF:
         {
-            /* perform substitution */
-            _lcc_macro_subst(
-                self,
-                self->tokens.next,
-                &(self->tokens)
-            );
-
-            /* evaluate token sequence */
-            int64_t val = _lcc_eval_tokens(self, self->tokens.next, &(self->tokens));
+            _lcc_val_t val = {};
+            _lcc_val_t *pval = &val;
             lcc_array_t *stack = &(self->eval_stack);
 
-            /* pop the old value if "#elif" */
-            if (((self->flags & LCC_LXDN_MASK) == LCC_LXDN_ELIF) &&
-                !(lcc_array_pop(stack, NULL)))
+            /* "#elif" branch */
+            if ((self->flags & LCC_LXDN_MASK) == LCC_LXDN_ELIF)
             {
-                _lcc_lexer_error(self, "#elif without #if");
-                return;
+                /* read the stack top */
+                if (!(pval = lcc_array_top(stack)))
+                {
+                    _lcc_lexer_error(self, "#elif without #if");
+                    return;
+                }
+
+                /* discard "#elif" branch as needed */
+                if (pval->discard)
+                {
+                    /* clear all tokens */
+                    while (self->tokens.next != &(self->tokens))
+                        lcc_token_free(self->tokens.next);
+
+                    /* force an inactive branch */
+                    pval->value = 0;
+                    self->condstate = LCC_LX_CONDSTATE_IDLE;
+                    self->cond_level = 1;
+                    break;
+                }
             }
 
+            /* perform a substitution, then evaluate token sequence */
+            if (!(_lcc_macro_subst(self, self->tokens.next, &(self->tokens))) ||
+                !(_lcc_eval_tokens(self, &(pval->value))))
+                return;
+
+            /* clear all tokens after evaluation */
+            while (self->tokens.next != &(self->tokens))
+                lcc_token_free(self->tokens.next);
+
+            /* set discard flags for remaining branches */
+            if (pval->value)
+                pval->discard = 1;
+
+            /* append new if "#if" */
+            if ((self->flags & LCC_LXDN_MASK) == LCC_LXDN_IF)
+                lcc_array_append(&(self->eval_stack), pval);
+
             /* push new value, and set conditional lexer state */
-            lcc_array_append(stack, &val);
             self->condstate = LCC_LX_CONDSTATE_IDLE;
             self->cond_level = 1;
             break;
@@ -3855,10 +4472,23 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing macro name");
             lcc_string_t *macro = _LCC_ENSURE_IDENT(self, token, "Macro name must be an identifier");
 
+            /* check for macro name */
+            if (!(strcmp(macro->buf, "defined")))
+            {
+                lcc_token_free(token);
+                _lcc_lexer_error(self, "\"defined\" is not a valid macro name");
+                return;
+            }
+
             /* check for defination */
             char has_sym = lcc_map_get(&(self->psyms), macro, NULL);
             char flag_ifdef = ((self->flags & LCC_LXDN_MASK) == LCC_LXDN_IFDEF);
-            int64_t value_eval = (has_sym == flag_ifdef) ? 1 : 0;
+
+            /* build a new value */
+            _lcc_val_t value = {
+                .value = (has_sym == flag_ifdef) ? 1 : 0,
+                .discard = 0,
+            };
 
             /* conditional lexer state */
             self->condstate = LCC_LX_CONDSTATE_IDLE;
@@ -3866,7 +4496,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
             /* release the token, and push the new value onto eval stack */
             lcc_token_free(token);
-            lcc_array_append(&(self->eval_stack), &value_eval);
+            lcc_array_append(&(self->eval_stack), &value);
             break;
         }
 
@@ -3874,7 +4504,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_ELSE:
         {
             /* extract the last value on stack */
-            int64_t *value;
+            _lcc_val_t *value;
             lcc_array_t *stack = &(self->eval_stack);
 
             /* nothing on stack, that's an error */
@@ -3884,8 +4514,13 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 return;
             }
 
-            /* invert condition to emulate "else" */
-            *value = !(*value);
+            /* invert condition to emulate "else" if not discarding */
+            if (value->discard)
+                value->value = 0;
+            else
+                value->value = !(value->value);
+
+            /* restart conditional lexer */
             self->condstate = LCC_LX_CONDSTATE_IDLE;
             self->cond_level = 1;
             break;
@@ -3988,10 +4623,381 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 #undef _LCC_ENSURE_STRING
 #undef _LCC_ENSURE_OPERATOR
 
+#define _LCC_MACRO_EXT(name)                \
+    static char __lcc_macro_ext_ ## name(   \
+        lcc_lexer_t *self,                  \
+        lcc_token_t **begin,                \
+        lcc_token_t *end                    \
+    )
+
+#define _LCC_ADD_MACRO_EXT_F(ext_name) {                        \
+    _lcc_sym_t __macro_ext_ ## ext_name = {                     \
+        .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),    \
+        .ext = &__lcc_macro_ext_ ## ext_name,                   \
+        .body = NULL,                                           \
+        .name = lcc_string_from(# ext_name),                    \
+        .args = LCC_STRING_ARRAY_STATIC_INIT,                   \
+        .flags = LCC_LXDF_DEFINE_SYS | LCC_LXDF_DEFINE_F,       \
+        .vaname = NULL,                                         \
+    };                                                          \
+                                                                \
+    lcc_map_set(                                                \
+        &(self->psyms),                                         \
+        __macro_ext_ ## ext_name.name,                          \
+        NULL,                                                   \
+        &__macro_ext_ ## ext_name                               \
+    );                                                          \
+}
+
+#define _LCC_ADD_MACRO_EXT_O(ext_name) {                        \
+    _lcc_sym_t __macro_ext_ ## ext_name = {                     \
+        .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),    \
+        .ext = &__lcc_macro_ext_ ## ext_name,                   \
+        .body = NULL,                                           \
+        .name = lcc_string_from(# ext_name),                    \
+        .args = LCC_STRING_ARRAY_STATIC_INIT,                   \
+        .flags = LCC_LXDF_DEFINE_SYS | LCC_LXDF_DEFINE_O,       \
+        .vaname = NULL,                                         \
+    };                                                          \
+                                                                \
+    lcc_map_set(                                                \
+        &(self->psyms),                                         \
+        __macro_ext_ ## ext_name.name,                          \
+        NULL,                                                   \
+        &__macro_ext_ ## ext_name                               \
+    );                                                          \
+}
+
+_LCC_MACRO_EXT(__FILE__)
+{
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_raw(
+        lcc_string_copy(self->fname),
+        lcc_string_copy(self->fname)
+    );
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(__LINE__)
+{
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_int(self->row + 1);
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(__DATE__)
+{
+    char s[16] = {};
+    time_t ts;
+    struct tm tm;
+
+    /* read current time */
+    if ((time(&ts) < 0) || !(localtime_r(&ts, &tm)))
+        strcpy(s, "??? ?? ????");
+    else
+        strftime(s, sizeof(s), "%b %e %Y", &tm);
+
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_raw(
+        lcc_string_from(s),
+        lcc_string_from(s)
+    );
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(__TIME__)
+{
+    char s[16] = {};
+    time_t ts;
+    struct tm tm;
+
+    /* read current time */
+    if ((time(&ts) < 0) || !(localtime_r(&ts, &tm)))
+        strcpy(s, "??:??:??");
+    else
+        strftime(s, sizeof(s), "%H:%M:%S", &tm);
+
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_raw(
+        lcc_string_from(s),
+        lcc_string_from(s)
+    );
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(defined)
+{
+    char brk;
+    lcc_token_t *token = *begin;
+    lcc_string_t *ident;
+
+    /* check for next token */
+    if ((token = token->next) == end)
+    {
+        _lcc_lexer_error(self, "Macro name missing");
+        return 0;
+    }
+
+    /* check for operator type */
+    switch (token->type)
+    {
+        /* "defined xxx" */
+        case LCC_TK_IDENT:
+        {
+            brk = 0;
+            token = token->next;
+            ident = lcc_string_copy(token->prev->ident);
+            break;
+        }
+
+        /* maybe "defined(xxx)" */
+        case LCC_TK_OPERATOR:
+        {
+            /* must be a "(" in this case */
+            if (token->operator != LCC_OP_LBRACKET)
+                goto _lcc_factor_not_ident;
+
+            /* skip the "(" */
+            brk = 1;
+            token = token->next;
+
+            /* then must be an identifier */
+            if (token->type != LCC_TK_IDENT)
+                goto _lcc_factor_not_ident;
+
+            /* extract the identifier */
+            token = token->next;
+            ident = lcc_string_copy(token->prev->ident);
+            break;
+        }
+
+            /* otherwise it's an error */
+        default:
+        _lcc_factor_not_ident:
+        {
+            _lcc_lexer_error(self, "Macro name must be an identifier");
+            return 0;
+        }
+    }
+
+    /* close bracket required */
+    if (brk)
+    {
+        /* check for close bracket */
+        if ((token->type != LCC_TK_OPERATOR) ||
+            (token->operator != LCC_OP_RBRACKET))
+        {
+            _lcc_lexer_error(self, "Missing ')' after 'defined'");
+            return 0;
+        }
+
+        /* skip the ")" */
+        token = token->next;
+    }
+
+    /* check for "defined" */
+    if (!(strcmp(ident->buf, "defined")))
+    {
+        _lcc_lexer_error(self, "\"defined\" is not a valid macro name");
+        lcc_string_unref(ident);
+        return 0;
+    }
+
+    /* remove old tokens */
+    while ((*begin)->next != token)
+        lcc_token_free((*begin)->next);
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach(token, lcc_token_from_int(lcc_map_get(&(self->psyms), ident, NULL)));
+
+    /* update the head pointer */
+    *begin = token;
+    lcc_string_unref(ident);
+    return 1;
+}
+
+static char _lcc_check_include(
+    lcc_lexer_t *self,
+    lcc_token_t **begin,
+    lcc_token_t *end,
+    char is_next)
+{
+    /* skip "__has_include" */
+    lcc_token_t *next;
+    lcc_token_t *head = (*begin)->next;
+
+    /* token source and file path */
+    char is_sys = 1;
+    char is_macro = 0;
+    lcc_string_t *src;
+    lcc_string_t *path;
+
+    /* check for next token */
+    if ((head == end) ||
+        (head->type != LCC_TK_OPERATOR) ||
+        (head->operator != LCC_OP_LBRACKET))
+    {
+        _lcc_lexer_error(self, "Missing '(' after '__has_include'");
+        return 0;
+    }
+
+    /* may need macro expansion */
+    if (((head->next->type != LCC_TK_LITERAL) ||
+         (head->next->literal.type != LCC_LT_STRING)) &&
+        ((head->next->type != LCC_TK_OPERATOR) ||
+         (head->next->operator != LCC_OP_LT)))
+    {
+        /* could only be identifiers */
+        if (head->next->type != LCC_TK_IDENT)
+        {
+            _lcc_lexer_error(self, "Expected \"FILENAME\" or <FILENAME>");
+            return 0;
+        }
+
+        /* search for next token */
+        if (!(next = _lcc_next_arg(head->next, end, 0)))
+        {
+            _lcc_lexer_error(self, "Expected value in expression");
+            return 0;
+        }
+
+        /* perform substitution */
+        if (!(is_macro = _lcc_macro_subst(self, head->next, next)))
+            return 0;
+    }
+
+    /* move to next token */
+    if ((next = head->next) == end)
+    {
+        _lcc_lexer_error(self, "Expected value in expression");
+        return 0;
+    }
+
+    /* __has_include[_next]("...") */
+    if ((next->type == LCC_TK_LITERAL) &&
+        (next->literal.type == LCC_LT_STRING))
+    {
+        /* copy the raw string */
+        path = lcc_string_copy(next->literal.raw);
+        next = next->next;
+
+        /* remove '"' on either side */
+        is_sys = 0;
+        path->buf[--path->len] = 0;
+        memmove(path->buf, path->buf + 1, path->len--);
+    }
+
+    /* __has_include[_next](<...>) */
+    else if ((next->type == LCC_TK_OPERATOR) &&
+             (next->operator == LCC_OP_LT))
+    {
+        /* create a new string */
+        path = lcc_string_new(0);
+        next = next->next;
+
+        /* concat every token before ">" */
+        while ((next != end) &&
+               ((next->type != LCC_TK_OPERATOR) ||
+                (next->operator != LCC_OP_GT)))
+        {
+            lcc_string_append(path, next->src);
+            next = next->next;
+        }
+
+        /* check for end of tokens */
+        if (next == end)
+        {
+            _lcc_lexer_error(self, "Expected \"FILENAME\" or <FILENAME>");
+            return 0;
+        }
+
+        /* remove whitespaces when substituted from macro */
+        if (is_macro)
+        {
+            src = path;
+            path = lcc_string_trim(src);
+            lcc_string_unref(src);
+        }
+
+        /* skip the ">" */
+        next = next->next;
+    }
+
+    /* otherwise it's an error */
+    else
+    {
+        _lcc_lexer_error(self, "Expected \"FILENAME\" or <FILENAME>");
+        return 0;
+    }
+
+    /* must be a ")" */
+    if ((next->type != LCC_TK_OPERATOR) ||
+        (next->operator != LCC_OP_RBRACKET))
+    {
+        _lcc_lexer_error(self, "Missing ')' after '__has_include'");
+        return 0;
+    }
+
+    /* set flags */
+    if (is_sys) self->flags |= LCC_LXDF_INCLUDE_SYS;
+    if (is_next) self->flags |= LCC_LXDF_INCLUDE_NEXT;
+
+    /* try load the include file */
+    char result = _lcc_load_include(self, path, 1);
+    lcc_token_t *new = lcc_token_from_int(result);
+    lcc_token_t *tail = next->next;
+
+    /* reset flags */
+    if (is_sys) self->flags &= ~LCC_LXDF_INCLUDE_SYS;
+    if (is_next) self->flags &= ~LCC_LXDF_INCLUDE_NEXT;
+
+    /* remove old tokens */
+    while ((*begin)->next != tail)
+        lcc_token_free((*begin)->next);
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = tail), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(__has_include)
+{
+    /* check as "#include" */
+    return _lcc_check_include(self, begin, end, 0);
+}
+
+_LCC_MACRO_EXT(__has_include_next)
+{
+    /* check as "#include_next" */
+    return _lcc_check_include(self, begin, end, 1);
+}
+
 static inline char _lcc_check_drop_char(lcc_lexer_t *self)
 {
     /* most inner compiling section condition */
-    int64_t *value;
+    _lcc_val_t *value;
     lcc_array_t *stack = &(self->eval_stack);
 
     /* outside of condition compiling section,
@@ -4000,7 +5006,7 @@ static inline char _lcc_check_drop_char(lcc_lexer_t *self)
         (self->flags & LCC_LXF_DIRECTIVE))
         return 0;
     else
-        return (*value == 0);
+        return !(value->value);
 }
 
 static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
@@ -4023,8 +5029,7 @@ static void _lcc_psym_dtor(lcc_map_t *self, void *value, void *data)
 static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
 {
     lcc_file_t *fp = item;
-    lcc_string_unref(fp->name);
-    lcc_string_array_free(&(fp->lines));
+    _lcc_file_free(fp);
 }
 
 void lcc_lexer_free(lcc_lexer_t *self)
@@ -4063,14 +5068,14 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
         .col = 0,
         .row = 0,
         .name = lcc_string_from("<define>"),
-        .flags = 0,
+        .flags = LCC_FF_SYS,
         .lines = LCC_STRING_ARRAY_STATIC_INIT,
     };
 
     /* complex structures */
     lcc_map_init(&(self->psyms), sizeof(_lcc_sym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
-    lcc_array_init(&(self->eval_stack), sizeof(int64_t), NULL, NULL);
+    lcc_array_init(&(self->eval_stack), sizeof(_lcc_val_t), NULL, NULL);
 
     /* token list and token buffer */
     lcc_token_init(&(self->tokens));
@@ -4106,28 +5111,39 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     self->error_data = NULL;
 
     /* version symbols */
-    lcc_lexer_add_define(self, "__LCC__", "1");
-    lcc_lexer_add_define(self, "__GNUC__", "4");
+    lcc_lexer_define(self, "__LCC__", "1");
+    lcc_lexer_define(self, "__GNUC__", "4");
 
     /* standard defines */
-    lcc_lexer_add_define(self, "__STDC__", "1");
-    lcc_lexer_add_define(self, "__STDC_HOSTED__", "1");
-    lcc_lexer_add_define(self, "__STDC_VERSION__", "199901L");
+    lcc_lexer_define(self, "__STDC__", "1");
+    lcc_lexer_define(self, "__STDC_HOSTED__", "1");
+    lcc_lexer_define(self, "__STDC_VERSION__", "199901L");
 
     /* platform specific symbols */
-    lcc_lexer_add_define(self, "unix", "1");
-    lcc_lexer_add_define(self, "__unix", "1");
-    lcc_lexer_add_define(self, "__unix__", "1");
-    lcc_lexer_add_define(self, "__x86_64__", "1");
+    lcc_lexer_define(self, "unix", "1");
+    lcc_lexer_define(self, "__unix", "1");
+    lcc_lexer_define(self, "__unix__", "1");
+    lcc_lexer_define(self, "__x86_64__", "1");
 
     /* data model */
-    lcc_lexer_add_define(self, "__LP64__", "1");
-    lcc_lexer_add_define(self, "__SIZE_TYPE__", "unsigned long");
-    lcc_lexer_add_define(self, "__PTRDIFF_TYPE__", "long");
+    lcc_lexer_define(self, "__LP64__", "1");
+    lcc_lexer_define(self, "__SIZE_TYPE__", "unsigned long");
+    lcc_lexer_define(self, "__PTRDIFF_TYPE__", "long");
 
     /* other built-in types */
-    lcc_lexer_add_define(self, "__WINT_TYPE__", "unsigned int");
-    lcc_lexer_add_define(self, "__WCHAR_TYPE__", "int");
+    lcc_lexer_define(self, "__WINT_TYPE__", "unsigned int");
+    lcc_lexer_define(self, "__WCHAR_TYPE__", "int");
+
+    /* built-in object-like extensions */
+    _LCC_ADD_MACRO_EXT_O(__FILE__);
+    _LCC_ADD_MACRO_EXT_O(__LINE__);
+    _LCC_ADD_MACRO_EXT_O(__DATE__);
+    _LCC_ADD_MACRO_EXT_O(__TIME__);
+
+    /* built-in function-like extensions */
+    _LCC_ADD_MACRO_EXT_F(defined);
+    _LCC_ADD_MACRO_EXT_F(__has_include);
+    _LCC_ADD_MACRO_EXT_F(__has_include_next);
     return 1;
 }
 
@@ -4137,6 +5153,10 @@ lcc_token_t *lcc_lexer_next(lcc_lexer_t *self)
     if (self->tokens.next == &(self->tokens))
         if (!(lcc_lexer_advance(self)))
             return NULL;
+
+    /* still no more tokens */
+    if (self->tokens.next == &(self->tokens))
+        return NULL;
 
     /* shift one token from lexer token list */
     lcc_token_t *next = self->tokens.next;
@@ -4261,6 +5281,14 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                 /* check for EOS (End-Of-Source) */
                 if (self->flags & LCC_LXF_EOS)
                 {
+                    /* check for unterminated conditional directives */
+                    if (self->eval_stack.count)
+                    {
+                        _lcc_lexer_error(self, "Unterminated conditional directive");
+                        break;
+                    }
+
+                    /* move to end of source */
                     self->state = LCC_LX_STATE_END;
                     self->substate = LCC_LX_SUBSTATE_NULL;
                     break;
@@ -4303,16 +5331,15 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             {
                 /* in condition compilation section,
                  * whereas this section is not compiled */
-                if (_lcc_check_drop_char(self))
+                if (!(_lcc_check_drop_char(self)))
                 {
                     self->flags |= LCC_LXF_EOL;
-                    _lcc_handle_condition(self);
+                    _lcc_handle_substate(self);
                 }
                 else
                 {
                     self->flags |= LCC_LXF_EOL;
-                    lcc_string_append_from(self->source, "\n");
-                    _lcc_handle_substate(self);
+                    _lcc_handle_condition(self);
                 }
 
                 /* move to next line */
@@ -4386,13 +5413,14 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
             {
                 /* handle the token first */
                 _lcc_handle_directive(self);
-
-                /* not rejected */
-                if (self->state != LCC_LX_STATE_REJECT)
-                    _lcc_commit_directive(self);
-
-                /* allow directives from now on */
                 self->file->flags &= ~LCC_FF_LNODIR;
+
+                /* rejected, don't commit */
+                if (self->state == LCC_LX_STATE_REJECT)
+                    break;
+
+                /* commit the directive */
+                _lcc_commit_directive(self);
                 break;
             }
 
@@ -4431,53 +5459,46 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                         self->subst_level = 0;
                         break;
                     }
-
-                    /* object-like macros */
-                    self->flags &= ~LCC_LXF_SUBST;
-                    _lcc_macro_subst(self, self->tokens.next, &(self->tokens));
-
-                    /* check substitution status */
-                    if (self->state == LCC_LX_STATE_REJECT)
-                        break;
-                    else
-                        return &(self->tokens);
                 }
-
-                /* still not substiting */
-                if (!(self->flags & LCC_LXF_SUBST))
-                    return &(self->tokens);
-
-                /* looking for the first bracket */
-                if (!(self->subst_level) &&
-                    !((token->type == LCC_TK_OPERATOR) &&
-                      (token->operator == LCC_OP_LBRACKET)))
+                else
                 {
-                    self->flags &= ~LCC_LXF_SUBST;
-                    return &(self->tokens);
+                    /* still not substiting */
+                    if (!(self->flags & LCC_LXF_SUBST))
+                        return &(self->tokens);
+
+                    /* looking for the first bracket */
+                    if (!(self->subst_level) &&
+                        !((token->type == LCC_TK_OPERATOR) &&
+                          (token->operator == LCC_OP_LBRACKET)))
+                    {
+                        self->flags &= ~LCC_LXF_SUBST;
+                        return &(self->tokens);
+                    }
+
+                    /* not an operator, just append to token chain */
+                    if (token->type != LCC_TK_OPERATOR)
+                        break;
+
+                    /* "(" operator */
+                    if (token->operator == LCC_OP_LBRACKET)
+                        self->subst_level++;
+
+                    /* ")" operator */
+                    if (token->operator == LCC_OP_RBRACKET)
+                        self->subst_level--;
+
+                    /* still in macro invocation */
+                    if (self->subst_level)
+                        break;
                 }
 
-                /* not an operator, just append to token chain */
-                if (token->type != LCC_TK_OPERATOR)
-                    break;
-
-                /* "(" operator */
-                if (token->operator == LCC_OP_LBRACKET)
-                    self->subst_level++;
-
-                /* ")" operator */
-                if (token->operator == LCC_OP_RBRACKET)
-                    self->subst_level--;
-
-                /* still in macro invocation */
-                if (self->subst_level)
-                    break;
-
-                /* perform the substitution */
+                /* reset substitution status */
                 self->flags &= ~LCC_LXF_SUBST;
-                _lcc_macro_subst(self, self->tokens.next, &(self->tokens));
+                self->subst_level = 0;
 
-                /* check substitution status */
-                if (self->state == LCC_LX_STATE_REJECT)
+                /* perform substitution */
+                if (!(_lcc_macro_subst(self, self->tokens.next, &(self->tokens))) ||
+                    (self->tokens.next == &(self->tokens)))
                     break;
                 else
                     return &(self->tokens);
@@ -4498,7 +5519,22 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
     }
 }
 
-void lcc_lexer_add_define(lcc_lexer_t *self, const char *name, const char *value)
+void lcc_lexer_undef(lcc_lexer_t *self, const char *name)
+{
+    /* must be in initial state */
+    if (self->state != LCC_LX_STATE_INIT)
+    {
+        fprintf(stderr, "*** FATAL: cannot remove symbols in the middle of parsing");
+        abort();
+    }
+
+    /* remove the symbol from preprocessor table */
+    lcc_string_t *key = lcc_string_from(name);
+    lcc_map_pop(&(self->psyms), key, NULL);
+    lcc_string_unref(key);
+}
+
+void lcc_lexer_define(lcc_lexer_t *self, const char *name, const char *value)
 {
     /* must be in initial state */
     if (self->state != LCC_LX_STATE_INIT)
