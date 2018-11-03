@@ -2121,123 +2121,127 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
 
         /** very complex operator logic **/
 
-        #define ACCEPT1_OR_KEEP(expect, ac_token, keep_token)                           \
-        {                                                                               \
-            if (self->ch == (expect))                                                   \
-            {                                                                           \
-                self->state = LCC_LX_STATE_ACCEPT;                                      \
-                _lcc_commit_operator(self, ac_token, 1);                                \
-            }                                                                           \
-            else                                                                        \
-            {                                                                           \
-                self->state = LCC_LX_STATE_ACCEPT_KEEP;                                 \
-                _lcc_commit_operator(self, keep_token, 0);                              \
-            }                                                                           \
-                                                                                        \
-            break;                                                                      \
-        }
+#define KEEP(keep_token) default:               \
+{                                               \
+    self->state = LCC_LX_STATE_ACCEPT_KEEP;     \
+    _lcc_commit_operator(self, keep_token, 0);  \
+    break;                                      \
+}
 
-        #define ACCEPT2_OR_KEEP(expect1, ac_token1, expect2, ac_token2, keep_token)     \
-        {                                                                               \
-            switch (self->ch)                                                           \
-            {                                                                           \
-                case expect1:                                                           \
-                {                                                                       \
-                    self->state = LCC_LX_STATE_ACCEPT;                                  \
-                    _lcc_commit_operator(self, ac_token1, 1);                           \
-                    break;                                                              \
-                }                                                                       \
-                                                                                        \
-                case expect2:                                                           \
-                {                                                                       \
-                    self->state = LCC_LX_STATE_ACCEPT;                                  \
-                    _lcc_commit_operator(self, ac_token2, 1);                           \
-                    break;                                                              \
-                }                                                                       \
-                                                                                        \
-                default:                                                                \
-                {                                                                       \
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                             \
-                    _lcc_commit_operator(self, keep_token, 0);                          \
-                    break;                                                              \
-                }                                                                       \
-            }                                                                           \
-                                                                                        \
-            break;                                                                      \
-        }
+#define SHIFT(expect, shift) case expect:       \
+{                                               \
+    self->state = LCC_LX_STATE_SHIFT;           \
+    self->substate = shift;                     \
+    break;                                      \
+}
 
-        #define SHIFT_ACCEPT_OR_KEEP(expect1, shift, expect2, ac_token, keep_token)     \
-        {                                                                               \
-            switch (self->ch)                                                           \
-            {                                                                           \
-                case expect1:                                                           \
-                {                                                                       \
-                    self->state = LCC_LX_STATE_SHIFT;                                   \
-                    self->substate = shift;                                             \
-                    break;                                                              \
-                }                                                                       \
-                                                                                        \
-                case expect2:                                                           \
-                {                                                                       \
-                    self->state = LCC_LX_STATE_ACCEPT;                                  \
-                    _lcc_commit_operator(self, ac_token, 1);                            \
-                    break;                                                              \
-                }                                                                       \
-                                                                                        \
-                default:                                                                \
-                {                                                                       \
-                    self->state = LCC_LX_STATE_ACCEPT_KEEP;                             \
-                    _lcc_commit_operator(self, keep_token, 0);                          \
-                    break;                                                              \
-                }                                                                       \
-            }                                                                           \
-        }
+#define ACCEPT(expect, ac_token) case expect:   \
+{                                               \
+    self->state = LCC_LX_STATE_ACCEPT;          \
+    _lcc_commit_operator(self, ac_token, 1);    \
+    break;                                      \
+}
+
+#define AC_K(                       \
+    expect, ac_token,               \
+    keep_token)                     \
+{                                   \
+    switch (self->ch)               \
+    {                               \
+        KEEP(keep_token)            \
+        ACCEPT(expect, ac_token)    \
+    }                               \
+                                    \
+    break;                          \
+}
+
+#define AC2_K(                      \
+    expect1, ac_token1,             \
+    expect2, ac_token2,             \
+    keep_token)                     \
+{                                   \
+    switch (self->ch)               \
+    {                               \
+        KEEP(keep_token)            \
+        ACCEPT(expect1, ac_token1)  \
+        ACCEPT(expect2, ac_token2)  \
+    }                               \
+                                    \
+    break;                          \
+}
 
         /* one- or two-character operators */
-        case LCC_LX_SUBSTATE_OPERATOR_STAR    : ACCEPT1_OR_KEEP('=', LCC_OP_IMUL, LCC_OP_STAR   )   /* * *= */
-        case LCC_LX_SUBSTATE_OPERATOR_PERCENT : ACCEPT1_OR_KEEP('=', LCC_OP_IMOD, LCC_OP_PERCENT)   /* % %= */
-        case LCC_LX_SUBSTATE_OPERATOR_EQU     : ACCEPT1_OR_KEEP('=', LCC_OP_EQ  , LCC_OP_ASSIGN )   /* = == */
-        case LCC_LX_SUBSTATE_OPERATOR_EXCL    : ACCEPT1_OR_KEEP('=', LCC_OP_NEQ , LCC_OP_LNOT   )   /* ! != */
-        case LCC_LX_SUBSTATE_OPERATOR_CARET   : ACCEPT1_OR_KEEP('=', LCC_OP_IXOR, LCC_OP_BXOR   )   /* ^ ^= */
+        case LCC_LX_SUBSTATE_OPERATOR_STAR    : AC_K('=', LCC_OP_IMUL, LCC_OP_STAR   )  /* * *= */
+        case LCC_LX_SUBSTATE_OPERATOR_PERCENT : AC_K('=', LCC_OP_IMOD, LCC_OP_PERCENT)  /* % %= */
+        case LCC_LX_SUBSTATE_OPERATOR_EQU     : AC_K('=', LCC_OP_EQ  , LCC_OP_ASSIGN )  /* = == */
+        case LCC_LX_SUBSTATE_OPERATOR_EXCL    : AC_K('=', LCC_OP_NEQ , LCC_OP_LNOT   )  /* ! != */
+        case LCC_LX_SUBSTATE_OPERATOR_CARET   : AC_K('=', LCC_OP_IXOR, LCC_OP_BXOR   )  /* ^ ^= */
 
         /* one- or two-character and incremental operators */
-        case LCC_LX_SUBSTATE_OPERATOR_PLUS    : ACCEPT2_OR_KEEP('+', LCC_OP_INCR, '=', LCC_OP_IADD, LCC_OP_PLUS )   /* + ++ += */
-        case LCC_LX_SUBSTATE_OPERATOR_MINUS   : ACCEPT2_OR_KEEP('-', LCC_OP_DECR, '=', LCC_OP_ISUB, LCC_OP_MINUS)   /* - -- -= */
-        case LCC_LX_SUBSTATE_OPERATOR_AMP     : ACCEPT2_OR_KEEP('&', LCC_OP_LAND, '=', LCC_OP_IAND, LCC_OP_BAND )   /* & && &= */
-        case LCC_LX_SUBSTATE_OPERATOR_BAR     : ACCEPT2_OR_KEEP('|', LCC_OP_LOR , '=', LCC_OP_IOR , LCC_OP_BOR  )   /* | || |= */
+        case LCC_LX_SUBSTATE_OPERATOR_PLUS    : AC2_K('+', LCC_OP_INCR, '=', LCC_OP_IADD, LCC_OP_PLUS )     /* + ++ += */
+        case LCC_LX_SUBSTATE_OPERATOR_AMP     : AC2_K('&', LCC_OP_LAND, '=', LCC_OP_IAND, LCC_OP_BAND )     /* & && &= */
+        case LCC_LX_SUBSTATE_OPERATOR_BAR     : AC2_K('|', LCC_OP_LOR , '=', LCC_OP_IOR , LCC_OP_BOR  )     /* | || |= */
 
         /* bit-shifting operators */
-        case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHR, LCC_OP_BSHR)  /* >> >>= */
-        case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : ACCEPT1_OR_KEEP('=', LCC_OP_ISHL, LCC_OP_BSHL)  /* << <<= */
+        case LCC_LX_SUBSTATE_OPERATOR_GT_GT   : AC_K('=', LCC_OP_ISHR, LCC_OP_BSHR)     /* >> >>= */
+        case LCC_LX_SUBSTATE_OPERATOR_LT_LT   : AC_K('=', LCC_OP_ISHL, LCC_OP_BSHL)     /* << <<= */
+
+        /* - -- -> -= */
+        case LCC_LX_SUBSTATE_OPERATOR_MINUS:
+        {
+            switch (self->ch)
+            {
+                KEEP(LCC_OP_MINUS)
+                ACCEPT('=', LCC_OP_ISUB)
+                ACCEPT('-', LCC_OP_DECR)
+                ACCEPT('>', LCC_OP_DEREF)
+            }
+
+            break;
+        }
 
         /* > >> >= >>= */
         case LCC_LX_SUBSTATE_OPERATOR_GT:
         {
-            SHIFT_ACCEPT_OR_KEEP('>', LCC_LX_SUBSTATE_OPERATOR_GT_GT, '=', LCC_OP_GEQ, LCC_OP_GT)
+            switch (self->ch)
+            {
+                KEEP(LCC_OP_GT)
+                SHIFT('>', LCC_LX_SUBSTATE_OPERATOR_GT_GT)
+                ACCEPT('=', LCC_OP_GEQ)
+            }
+
             break;
         }
 
         /* < << <= <<=, or #include <...> file name */
         case LCC_LX_SUBSTATE_OPERATOR_LT:
         {
-            /* not parsing #include directive */
-            if (!(self->flags & LCC_LXDN_INCLUDE))
+            /* treat as file name when parsing "#include" directive */
+            if (self->flags & LCC_LXDN_INCLUDE)
             {
-                SHIFT_ACCEPT_OR_KEEP('<', LCC_LX_SUBSTATE_OPERATOR_LT_LT, '=', LCC_OP_LEQ, LCC_OP_LT)
-                break;
+                self->state = LCC_LX_STATE_SHIFT;
+                self->flags |= LCC_LXDF_INCLUDE_SYS;
+                self->substate = LCC_LX_SUBSTATE_INCLUDE_FILE;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+            }
+            else
+            {
+                switch (self->ch)
+                {
+                    KEEP(LCC_OP_LT)
+                    SHIFT('<', LCC_LX_SUBSTATE_OPERATOR_LT_LT)
+                    ACCEPT('=', LCC_OP_LEQ)
+                }
             }
 
-            /* otherwise parse as file name */
-            self->state = LCC_LX_STATE_SHIFT;
-            self->flags |= LCC_LXDF_INCLUDE_SYS;
-            self->substate = LCC_LX_SUBSTATE_INCLUDE_FILE;
-            lcc_token_buffer_append(&(self->token_buffer), self->ch);
             break;
         }
 
-        #undef ACCEPT1_OR_KEEP
-        #undef ACCEPT2_OR_KEEP
-        #undef SHIFT_ACCEPT_OR_KEEP
+#undef KEEP
+#undef SHIFT
+#undef ACCEPT
+#undef AC_K
+#undef AC2_K
 
         /* include file name (#include <...> only) */
         case LCC_LX_SUBSTATE_INCLUDE_FILE:
