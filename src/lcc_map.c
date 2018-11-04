@@ -48,40 +48,40 @@ static inline lcc_map_node_t *_lcc_find_node(lcc_map_t *self, lcc_string_t *key,
     if (hashp)
         *hashp = hash;
 
-    /* simple linear probing algorithm */
-    for (size_t i = 0; i < self->capacity; i++)
+    /* quadratic probing */
+    for (size_t p, i = 0; i < self->capacity; i++)
     {
+        /* move to next index */
+        p = index + i * i;
+        p %= self->capacity;
+
         /* empty nodes, cannot be after this */
-        if (!(self->bucket[index].flags))
+        if (!(self->bucket[p].flags))
             break;
 
         /* skip deleted nodes */
-        if (self->bucket[index].flags & LCC_MAP_FLAGS_DEL)
+        if (self->bucket[p].flags & LCC_MAP_FLAGS_DEL)
             continue;
 
         /* absolute equals, definately found */
-        if (self->bucket[index].key == key)
-            return &(self->bucket[index]);
+        if (self->bucket[p].key == key)
+            return &(self->bucket[p]);
 
         /* check for hash, key length and key string */
-        if ((self->bucket[index].hash == hash) &&
-            (self->bucket[index].key->len == key->len) &&
-            (memcmp(self->bucket[index].key->buf, key->buf, key->len) == 0))
-            return &(self->bucket[index]);
-
-        /* move to next index */
-        index++;
-        index %= self->capacity;
+        if ((self->bucket[p].hash == hash) &&
+            (self->bucket[p].key->len == key->len) &&
+            (memcmp(self->bucket[p].key->buf, key->buf, key->len) == 0))
+            return &(self->bucket[p]);
     }
 
     /* not found */
     return NULL;
 }
 
-static char _lcc_map_rehash(lcc_map_t *self)
+static void _lcc_map_rehash(lcc_map_t *self)
 {
     /* create a new bucket */
-    size_t capacity = _lcc_next_prime(self->capacity);
+    size_t capacity = _lcc_next_prime(self->capacity * 2);
     lcc_map_node_t *bucket = calloc(capacity, sizeof(lcc_map_node_t));
 
     /* rehash all items */
@@ -95,25 +95,25 @@ static char _lcc_map_rehash(lcc_map_t *self)
             lcc_map_node_t *slot = NULL;
 
             /* probe for an available slot */
-            for (size_t j = 0; j < capacity; j++)
+            for (size_t p, j = 0; j < capacity; j++)
             {
+                /* move to next index */
+                p = index + j * j;
+                p %= capacity;
+
                 /* found an empty slot */
-                if (!(bucket[index].flags))
+                if (!(bucket[p].flags))
                 {
-                    slot = &(bucket[index]);
+                    slot = &(bucket[p]);
                     break;
                 }
-
-                /* move to next index */
-                index++;
-                index %= capacity;
             }
 
             /* must exists */
             if (!slot)
             {
-                free(bucket);
-                return 0;
+                fprintf(stderr, "*** FATAL: rehash failed\n");
+                abort();
             }
 
             /* copy all the attributes */
@@ -128,7 +128,6 @@ static char _lcc_map_rehash(lcc_map_t *self)
     free(self->bucket);
     self->bucket = bucket;
     self->capacity = capacity;
-    return 1;
 }
 
 void lcc_map_free(lcc_map_t *self)
@@ -228,33 +227,27 @@ char lcc_map_set(lcc_map_t *self, lcc_string_t *key, void *data, const void *new
     }
 
     /* rehash as needed */
-    if (self->count > self->capacity * LCC_MAP_LOAD_FAC)
-    {
-        if (!(_lcc_map_rehash(self)))
-        {
-            fprintf(stderr, "*** FATAL: rehash failed\n");
-            abort();
-        }
-    }
+    if (self->count >= self->capacity * LCC_MAP_LOAD_FAC)
+        _lcc_map_rehash(self);
 
     /* calculate node index */
     node = NULL;
     size_t index = hash % self->capacity;
 
-    /* simple linear probing algorithm */
-    for (size_t i = 0; i < self->capacity; i++)
+    /* quadratic probing algorithm */
+    for (size_t p, i = 0; i < self->capacity; i++)
     {
+        /* move to next index */
+        p = index + i * i;
+        p %= self->capacity;
+
         /* use empty node or reuse deleted node */
-        if ((self->bucket[index].flags == 0) ||
-            (self->bucket[index].flags & LCC_MAP_FLAGS_DEL))
+        if ((self->bucket[p].flags == 0) ||
+            (self->bucket[p].flags & LCC_MAP_FLAGS_DEL))
         {
-            node = &(self->bucket[index]);
+            node = &(self->bucket[p]);
             break;
         }
-
-        /* move to next index */
-        index++;
-        index %= self->capacity;
     }
 
     /* must exists */
