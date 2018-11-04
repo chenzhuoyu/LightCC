@@ -205,7 +205,9 @@ typedef struct _lcc_file_t
     int flags;
     size_t col;
     size_t row;
+    ssize_t offset;
     lcc_string_t *name;
+    lcc_string_t *display;
     lcc_string_array_t lines;
 } lcc_file_t;
 

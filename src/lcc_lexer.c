@@ -640,6 +640,8 @@ static const lcc_file_t INVALID_FILE = {
     .name = NULL,
     .flags = LCC_FF_INVALID,
     .lines = {},
+    .offset = 0,
+    .display = NULL,
 };
 
 lcc_file_t lcc_file_open(const char *fname)
@@ -666,6 +668,8 @@ lcc_file_t lcc_file_from_file(const char *fname, FILE *fp)
         .name = lcc_string_from(fname),
         .flags = 0,
         .lines = LCC_STRING_ARRAY_STATIC_INIT,
+        .offset = 1,
+        .display = lcc_string_from(fname),
     };
 
     /* line buffer and line size */
@@ -722,6 +726,8 @@ lcc_file_t lcc_file_from_string(const char *fname, const char *data, size_t size
         .name = lcc_string_from(fname),
         .flags = 0,
         .lines = LCC_STRING_ARRAY_STATIC_INIT,
+        .offset = 1,
+        .display = lcc_string_from(fname),
     };
 
     /* split every line */
@@ -1100,6 +1106,7 @@ static void _lcc_sym_free(_lcc_sym_t *self)
 static void _lcc_file_free(lcc_file_t *self)
 {
     lcc_string_unref(self->name);
+    lcc_string_unref(self->display);
     lcc_string_array_free(&(self->lines));
 }
 
@@ -2552,7 +2559,7 @@ static char _lcc_eval_factor(lcc_lexer_t *self, intmax_t *result, lcc_token_t **
                 ((*token)->next->type == LCC_TK_OPERATOR) &&
                 ((*token)->next->operator == LCC_OP_LBRACKET))
             {
-                _lcc_lexer_error(self, "Function-like macro \"%s\" is not defined", (*token)->ident->buf);
+                _lcc_lexer_error(self, "Function-like macro '%s' is not defined", (*token)->ident->buf);
                 return 0;
             }
 
@@ -2718,6 +2725,25 @@ static char _lcc_eval_tokens(lcc_lexer_t *self, intmax_t *result)
                                                             \
     /* extract the token */                                 \
     token->ident;                                           \
+})
+
+#define _LCC_ENSURE_RAWINT(self, token, efmt, ...)          \
+({                                                          \
+    /* must be an long long literal */                      \
+    if ((token->type != LCC_TK_LITERAL) ||                  \
+        ((token->literal.type != LCC_LT_INT) &&             \
+         (token->literal.type != LCC_LT_LONG) &&            \
+         (token->literal.type != LCC_LT_LONGLONG) &&        \
+         (token->literal.type != LCC_LT_UINT) &&            \
+         (token->literal.type != LCC_LT_ULONG) &&           \
+         (token->literal.type != LCC_LT_ULONGLONG)))        \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
+                                                            \
+    /* extract the token */                                 \
+    token->literal.raw;                                     \
 })
 
 #define _LCC_ENSURE_RAWSTR(self, token, efmt, ...)          \
@@ -2895,7 +2921,7 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname, char check
             }
 
             /* otherwise raise error as intended */
-            _lcc_lexer_error(self, "Cannot read directory \"%s\": [%d] %s", dir->buf, errno, strerror(errno));
+            _lcc_lexer_error(self, "Cannot read directory '%s': [%d] %s", dir->buf, errno, strerror(errno));
             lcc_string_unref(dir);
             return 0;
         }
@@ -2938,7 +2964,7 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname, char check
                 return 0;
 
             /* otherwise raise error as intended */
-            _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
+            _lcc_lexer_error(self, "Cannot open include file '%s': [%d] %s", fname->buf, errno, strerror(errno));
             return 0;
         }
     }
@@ -2996,7 +3022,7 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname, char check
                 return 0;
 
             /* otherwise raise error as intended */
-            _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, errno, strerror(errno));
+            _lcc_lexer_error(self, "Cannot open include file '%s': [%d] %s", fname->buf, errno, strerror(errno));
             return 0;
         }
     }
@@ -3010,7 +3036,7 @@ static char _lcc_load_include(lcc_lexer_t *self, lcc_string_t *fname, char check
         return 0;
 
     /* still not found, it's an error */
-    _lcc_lexer_error(self, "Cannot open include file \"%s\": [%d] %s", fname->buf, ENOENT, strerror(ENOENT));
+    _lcc_lexer_error(self, "Cannot open include file '%s': [%d] %s", fname->buf, ENOENT, strerror(ENOENT));
     return 0;
 }
 
@@ -3153,7 +3179,7 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
                 {
                     const char *op1 = lcc_token_op_name(a->operator);
                     const char *op2 = lcc_token_op_name(b->operator);
-                    _lcc_lexer_error(self, "\"%s%s\" is an invalid preprocessor token", op1, op2);
+                    _lcc_lexer_error(self, "'%s%s' is an invalid preprocessor token", op1, op2);
                     return 0;
                 }
             }
@@ -3171,7 +3197,7 @@ static char _lcc_macro_cat(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *e
         lcc_string_t *tk2 = lcc_token_str(b);
 
         /* throw the error */
-        _lcc_lexer_error(self, "\"%s%s\" is an invalid preprocessor token", tk1->buf, tk2->buf);
+        _lcc_lexer_error(self, "'%s%s' is an invalid preprocessor token", tk1->buf, tk2->buf);
         lcc_string_unref(tk1);
         lcc_string_unref(tk2);
         return 0;
@@ -3606,7 +3632,7 @@ static void _lcc_handle_define(lcc_lexer_t *self)
          * the only reserved word for preprocessor) */
         if (!(strcmp(self->tokens.next->ident->buf, "defined")))
         {
-            _lcc_lexer_error(self, "Cannot redefine \"defined\"");
+            _lcc_lexer_error(self, "'defined' is not a valid macro name");
             return;
         }
 
@@ -4188,7 +4214,7 @@ static void _lcc_handle_directive(lcc_lexer_t *self)
             /* no such directive */
             if (!(pb->name))
             {
-                _lcc_lexer_error(self, "Unknown compiler directive \"%s\"", name->buf);
+                _lcc_lexer_error(self, "Unknown compiler directive '%s'", name->buf);
                 return;
             }
 
@@ -4374,7 +4400,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             if (old.flags & LCC_LXDF_DEFINE_SYS)
             {
                 _lcc_sym_free(&old);
-                _lcc_lexer_warning(self, "Redefining builtin macro \"%s\"", self->macro_name->buf);
+                _lcc_lexer_warning(self, "Redefining builtin macro '%s'", self->macro_name->buf);
                 break;
             }
 
@@ -4391,7 +4417,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
             /* redefine to same token sequence doesn't considered as "macro redefined" */
             if ((a != sym.body) || (b != old.body))
-                _lcc_lexer_warning(self, "Symbol \"%s\" redefined", self->macro_name->buf);
+                _lcc_lexer_warning(self, "Symbol '%s' redefined", self->macro_name->buf);
 
             /* release the old symbol */
             _lcc_sym_free(&old);
@@ -4410,7 +4436,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             if (!(strcmp(macro->buf, "defined")))
             {
                 lcc_token_free(token);
-                _lcc_lexer_error(self, "\"defined\" is not a valid macro name");
+                _lcc_lexer_error(self, "'defined' is not a valid macro name");
                 return;
             }
 
@@ -4423,7 +4449,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
             /* check for macro type */
             if (sym.flags & LCC_LXDF_DEFINE_SYS)
-                _lcc_lexer_warning(self, "Undefining builtin macro \"%s\"", macro->buf);
+                _lcc_lexer_warning(self, "Undefining builtin macro '%s'", macro->buf);
 
             /* release the token */
             _lcc_sym_free(&sym);
@@ -4499,7 +4525,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             if (!(strcmp(macro->buf, "defined")))
             {
                 lcc_token_free(token);
-                _lcc_lexer_error(self, "\"defined\" is not a valid macro name");
+                _lcc_lexer_error(self, "'defined' is not a valid macro name");
                 return;
             }
 
@@ -4593,12 +4619,53 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         /* "#line" directive */
         case LCC_LXDN_LINE:
         {
-            /* doesn't care what tokens given */
-            while (self->tokens.next != &(self->tokens))
-                lcc_token_free(self->tokens.next);
+            /* perform a macro expansion first */
+            if (!(_lcc_macro_subst(self, self->tokens.next, &(self->tokens))))
+                return;
 
-            /* not supported */
-            _lcc_lexer_warning(self, "#line directive is ignored");
+            /* extract the line number */
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing line number");
+            lcc_string_t *lineno = _LCC_ENSURE_RAWINT(self, token, "#line directive requires a positive integer argument");
+
+            /* also extract file name if any */
+            if (token->next != &(self->tokens))
+            {
+                /* extract the token */
+                lcc_token_t *next = token->next;
+                lcc_string_t *fname = _LCC_ENSURE_RAWSTR(self, next, "Invalid filename for #line directive");
+
+                /* extract the file name */
+                fname = lcc_string_ref(fname);
+                lcc_token_free(token->next);
+
+                /* remove '"' on either side */
+                fname->buf[--fname->len] = 0;
+                memmove(fname->buf, fname->buf + 1, fname->len--);
+
+                /* replace current display name */
+                lcc_string_unref(self->file->display);
+                self->file->display = fname;
+            }
+
+            /* check line number */
+            if ((lineno->len == 1) && (lineno->buf[0] == '0'))
+                _lcc_lexer_warning(self, "#line directive interprets number as decimal, not octal");
+
+            /* try convert to integer */
+            char *endp = NULL;
+            long long val = strtoll(lineno->buf, &endp, 10);
+
+            /* check for conversion result */
+            if (endp && (*endp))
+            {
+                lcc_token_free(token);
+                _lcc_lexer_error(self, "#line directive requires a simple digit sequence");
+                return;
+            }
+
+            /* update line number, then release the token */
+            self->file->offset = val - self->file->row - 1;
+            lcc_token_free(token);
             break;
         }
 
@@ -4709,7 +4776,7 @@ _LCC_MACRO_EXT(__LINE__)
 {
     /* create a new token */
     lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_int(self->row + 1);
+    lcc_token_t *new = lcc_token_from_int(self->row);
 
     /* replace the old token */
     lcc_token_free(*begin);
@@ -4840,7 +4907,7 @@ _LCC_MACRO_EXT(defined)
     /* check for "defined" */
     if (!(strcmp(ident->buf, "defined")))
     {
-        _lcc_lexer_error(self, "\"defined\" is not a valid macro name");
+        _lcc_lexer_error(self, "'defined' is not a valid macro name");
         lcc_string_unref(ident);
         return 0;
     }
@@ -5092,6 +5159,8 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
         .name = lcc_string_from("<define>"),
         .flags = LCC_FF_SYS,
         .lines = LCC_STRING_ARRAY_STATIC_INIT,
+        .offset = 1,
+        .display = lcc_string_from("<define>"),
     };
 
     /* complex structures */
@@ -5259,8 +5328,8 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
 
                 /* save the current file info */
                 self->col = file->col;
-                self->row = file->row;
-                self->fname = lcc_string_ref(file->name);
+                self->row = file->row + file->offset;
+                self->fname = lcc_string_ref(file->display);
 
                 /* check current character */
                 if (self->ch != '\\')
