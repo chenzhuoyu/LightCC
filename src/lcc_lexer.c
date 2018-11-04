@@ -5321,12 +5321,12 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
 
     /* version symbols */
     lcc_lexer_define(self, "__LCC__", "1");
-    lcc_lexer_define(self, "__VERSION__", "\"LightCC 1.0 (GCC 4.4.0 compatiable)\"");
+    lcc_lexer_define(self, "__VERSION__", "\"LightCC 1.0 (GCC 4.8.3 compatiable)\"");
 
-    /* LightCC emulates GCC 4.4.0 */
+    /* LightCC emulates GCC 4.8.3 */
     lcc_lexer_define(self, "__GNUC__", "4");
-    lcc_lexer_define(self, "__GNUC_MINOR__", "4");
-    lcc_lexer_define(self, "__GNUC_PATCHLEVEL__", "0");
+    lcc_lexer_define(self, "__GNUC_MINOR__", "8");
+    lcc_lexer_define(self, "__GNUC_PATCHLEVEL__", "3");
 
     /* standard defines */
     lcc_lexer_define(self, "__STDC__", "1");
