@@ -16,6 +16,9 @@ typedef struct _lcc_array_t
     lcc_array_dtor_fn dtor_fn;
 } lcc_array_t;
 
+#define LCC_ARRAY_AT(self, index, type) \
+    (*((type *)(lcc_array_get((self), (index)))))
+
 #define LCC_ARRAY_STATIC_INIT(_item_size, _dtor_fn, _dtor_data)   { \
     .count      = 0,                                                \
     .items      = NULL,                                             \

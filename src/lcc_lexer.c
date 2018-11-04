@@ -793,8 +793,12 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
-#define _LCC_MAX_MACRO_ARGS     65536
-#define _LCC_MAX_MACRO_NBMP     (_LCC_MAX_MACRO_ARGS / (sizeof(uint64_t) * 8))
+#define _LCC_MAX_MACRO_ARGS         65536
+#define _LCC_MAX_MACRO_BITS         (sizeof(uint64_t) * __CHAR_BIT__)
+#define _LCC_MAX_MACRO_NBMP         (_LCC_MAX_MACRO_ARGS / _LCC_MAX_MACRO_BITS)
+
+#define _LCC_MACRO_NX_SET(sym, n)   (sym)->nx[(n) / _LCC_MAX_MACRO_BITS] |= (1 << ((n) % _LCC_MAX_MACRO_BITS))
+#define _LCC_MACRO_NX_TEST(sym, n)  ((sym)->nx[(n) / _LCC_MAX_MACRO_BITS] & (1 << ((n) % _LCC_MAX_MACRO_BITS)))
 
 typedef char (_lcc_macro_extension_fn)(
     lcc_lexer_t *self,
@@ -3491,7 +3495,7 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
                 if (!(start->ref) &&                                        /* must not be self-ref macro */
                     !(sym->flags & LCC_LXDF_DEFINE_USING) &&                /* must not be recursive-ref macro */
                     ((argp >= sym->args.array.count) ||                     /* could be an argument in variadic arguments */
-                     !(sym->nx[argp / 64] & (1 << (argp % 64)))) &&         /* or "not-expand" bit not set for this argument */
+                     !(_LCC_MACRO_NX_TEST(sym, argp))) &&                   /* or "not-expand" bit not set for this argument */
                     !(_lcc_macro_scan(self, start, delim, has_defined)))    /* then perform substitution on this argument */
                 {
                     free(argvp);
@@ -4350,7 +4354,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
                         /* mark as not-expand */
                         if ((n = lcc_string_array_index(&(sym.args), p->next->ident)) >= 0)
-                            sym.nx[n / 64] |= (1 << (n % 64));
+                            _LCC_MACRO_NX_SET(&sym, n);
                     }
 
                     /* mark identifier before and after "##" as not-expand (NX) */
@@ -4368,12 +4372,12 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                         /* before "##" */
                         if ((p->prev->type == LCC_TK_IDENT) &&
                             ((n = lcc_string_array_index(&(sym.args), p->prev->ident)) >= 0))
-                            sym.nx[n / 64] |= (1 << (n % 64));
+                            _LCC_MACRO_NX_SET(&sym, n);
 
                         /* after "##" */
                         if ((p->next->type == LCC_TK_IDENT) &&
                             ((n = lcc_string_array_index(&(sym.args), p->next->ident)) >= 0))
-                            sym.nx[n / 64] |= (1 << (n % 64));
+                            _LCC_MACRO_NX_SET(&sym, n);
                     }
                 }
 
@@ -4719,6 +4723,17 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         lcc_token_t *end                    \
     )
 
+#define _LCC_MACRO_EXT_P(name)              \
+    static char __lcc_macro_ext_ ## name(   \
+        lcc_lexer_t *self,                  \
+        lcc_token_t **begin,                \
+        lcc_token_t *end                    \
+    )                                       \
+    {                                       \
+        *begin = (*begin)->next;            \
+        return 1;                           \
+    }
+
 #define _LCC_ADD_MACRO_EXT_F(ext_name) {                        \
     _lcc_sym_t __macro_ext_ ## ext_name = {                     \
         .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),    \
@@ -4757,6 +4772,8 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
     );                                                          \
 }
 
+/** Object-like built-in macros **/
+
 _LCC_MACRO_EXT(__FILE__)
 {
     /* create a new token */
@@ -4786,7 +4803,7 @@ _LCC_MACRO_EXT(__LINE__)
 
 _LCC_MACRO_EXT(__DATE__)
 {
-    char s[16] = {};
+    char s[32] = {};
     time_t ts;
     struct tm tm;
 
@@ -4811,7 +4828,7 @@ _LCC_MACRO_EXT(__DATE__)
 
 _LCC_MACRO_EXT(__TIME__)
 {
-    char s[16] = {};
+    char s[32] = {};
     time_t ts;
     struct tm tm;
 
@@ -4819,7 +4836,7 @@ _LCC_MACRO_EXT(__TIME__)
     if ((time(&ts) < 0) || !(localtime_r(&ts, &tm)))
         strcpy(s, "??:??:??");
     else
-        strftime(s, sizeof(s), "%H:%M:%S", &tm);
+        strftime(s, sizeof(s), "%T", &tm);
 
     /* create a new token */
     lcc_token_t *p = (*begin)->next;
@@ -4833,6 +4850,61 @@ _LCC_MACRO_EXT(__TIME__)
     lcc_token_attach((*begin = p), new);
     return 1;
 }
+
+_LCC_MACRO_EXT(__TIMESTAMP__)
+{
+    char s[32] = {};
+    struct tm tm;
+    struct stat st;
+
+    /* read current time */
+    if (stat(self->fname->buf, &st) ||
+        !(localtime_r(&(st.st_mtime), &tm)))
+        strcpy(s, "??? ??? ?? ??:??:?? ????");
+    else
+        strftime(s, sizeof(s), "%a %b %e %T %Y", &tm);
+
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_raw(
+        lcc_string_from(s),
+        lcc_string_from(s)
+    );
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(__BASE_FILE__)
+{
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_raw(
+        lcc_string_copy(LCC_ARRAY_AT(&(self->files), 0, lcc_file_t).display),
+        lcc_string_copy(LCC_ARRAY_AT(&(self->files), 0, lcc_file_t).display)
+    );
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+_LCC_MACRO_EXT(__INCLUDE_LEVEL__)
+{
+    /* create a new token */
+    lcc_token_t *p = (*begin)->next;
+    lcc_token_t *new = lcc_token_from_int(self->files.count - 1);
+
+    /* replace the old token */
+    lcc_token_free(*begin);
+    lcc_token_attach((*begin = p), new);
+    return 1;
+}
+
+/** Function-like built-in macros **/
 
 _LCC_MACRO_EXT(defined)
 {
@@ -5083,6 +5155,15 @@ _LCC_MACRO_EXT(__has_include_next)
     return _lcc_check_include(self, begin, end, 1);
 }
 
+/** Pseudo-macro "__func__" and "__FUNCTION__"
+ *
+ * neither of them is a macro
+ * the preprocessor does not know the name of the current function
+ * they will be replaced by the actual function name during syntax parsing
+ */
+_LCC_MACRO_EXT_P(__func__);
+_LCC_MACRO_EXT_P(__FUNCTION__);
+
 static inline char _lcc_check_drop_char(lcc_lexer_t *self)
 {
     /* most inner compiling section condition */
@@ -5203,7 +5284,12 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
 
     /* version symbols */
     lcc_lexer_define(self, "__LCC__", "1");
+    lcc_lexer_define(self, "__VERSION__", "\"LightCC 1.0 (GCC 4.4.0 compatiable)\"");
+
+    /* LightCC emulates GCC 4.4.0 */
     lcc_lexer_define(self, "__GNUC__", "4");
+    lcc_lexer_define(self, "__GNUC_MINOR__", "4");
+    lcc_lexer_define(self, "__GNUC_PATCHLEVEL__", "0");
 
     /* standard defines */
     lcc_lexer_define(self, "__STDC__", "1");
@@ -5221,20 +5307,38 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     lcc_lexer_define(self, "__SIZE_TYPE__", "unsigned long");
     lcc_lexer_define(self, "__PTRDIFF_TYPE__", "long");
 
-    /* other built-in types */
-    lcc_lexer_define(self, "__WINT_TYPE__", "unsigned int");
-    lcc_lexer_define(self, "__WCHAR_TYPE__", "int");
+    /* assembler specified macros (LightCC uses GAS syntax) */
+    lcc_lexer_define(self, "__REGISTER_PREFIX__", "%");
+    lcc_lexer_define(self, "__USER_LABEL_PREFIX__", "_");
+
+#define _NAME_DEF(type)     #type
+#define _COPY_NAME(type)    lcc_lexer_define(self, #type, _NAME_DEF(type))
+
+#include "lcc_builtin_sizes.i"
+#include "lcc_builtin_types.i"
+#include "lcc_builtin_limits.i"
+#include "lcc_builtin_endians.i"
+
+#undef _NAME_DEF
+#undef _COPY_NAME
 
     /* built-in object-like extensions */
     _LCC_ADD_MACRO_EXT_O(__FILE__);
     _LCC_ADD_MACRO_EXT_O(__LINE__);
     _LCC_ADD_MACRO_EXT_O(__DATE__);
     _LCC_ADD_MACRO_EXT_O(__TIME__);
+    _LCC_ADD_MACRO_EXT_O(__TIMESTAMP__);
+    _LCC_ADD_MACRO_EXT_O(__BASE_FILE__);
+    _LCC_ADD_MACRO_EXT_O(__INCLUDE_LEVEL__);
 
     /* built-in function-like extensions */
     _LCC_ADD_MACRO_EXT_F(defined);
     _LCC_ADD_MACRO_EXT_F(__has_include);
     _LCC_ADD_MACRO_EXT_F(__has_include_next);
+
+    /* pseudo-macro "__func__" and "__FUNCTION__" */
+    _LCC_ADD_MACRO_EXT_O(__func__);
+    _LCC_ADD_MACRO_EXT_O(__FUNCTION__);
     return 1;
 }
 

@@ -8,6 +8,10 @@ include_directories(include)
 
 set(LIGHTCC
         include/lcc_array.h
+        include/lcc_builtin_endians.i
+        include/lcc_builtin_limits.i
+        include/lcc_builtin_sizes.i
+        include/lcc_builtin_types.i
         include/lcc_lexer.h
         include/lcc_map.h
         include/lcc_string.h

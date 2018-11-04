@@ -1,6 +1,9 @@
 #ifndef LCC_PREPROCESSOR_H
 #define LCC_PREPROCESSOR_H
 
+#define _LCC_STR_I(x)   #x
+#define _LCC_STR(x)     _LCC_STR_I(x)
+
 #define _LCC_CONCAT_P(a, b) a ## b
 #define _LCC_CONCAT_I(a, b) _LCC_CONCAT_P(a, b)
 #define _LCC_CONCAT(a, b)   _LCC_CONCAT_I(a, b)
