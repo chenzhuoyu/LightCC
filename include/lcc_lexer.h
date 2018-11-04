@@ -376,7 +376,8 @@ typedef char (*lcc_lexer_on_error_fn)(
 #define LCC_LXDF_DEFINE_VAR     0x0000000008000000      /* variadic function-like macro */
 #define LCC_LXDF_DEFINE_NVAR    0x0000000010000000      /* named variadic arguments */
 #define LCC_LXDF_DEFINE_FINE    0x0000000020000000      /* macro is been checked */
-#define LCC_LXDF_DEFINE_SYS     0x0000000040000000      /* built-in macro */
+#define LCC_LXDF_DEFINE_USING   0x0000000040000000      /* macro is been expanding */
+#define LCC_LXDF_DEFINE_SYS     0x0000000080000000      /* built-in macro */
 #define LCC_LXDF_DEFINE_MASK    0x00000000ff000000      /* #define directive flags mask */
 
 #define LCC_LXDF_INCLUDE_SYS    0x0000000100000000      /* #include includes file from system headers */

@@ -3362,11 +3362,6 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
     _lcc_sym_t *sym;
     lcc_token_t *next;
     lcc_token_t *token = begin;
-    lcc_token_t *anchor = begin->prev;
-
-    /* macro prescan flags */
-    char again = 0;
-    lcc_array_t syms = LCC_ARRAY_STATIC_INIT(sizeof(_lcc_sym_t *), NULL, NULL);
 
     /* scan every token */
     while (token != end)
@@ -3392,8 +3387,9 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
         }
 
         /* self-ref macros */
-        if (token->ref)
+        if (token->ref || (sym->flags & LCC_LXDF_DEFINE_USING))
         {
+            token->ref = 1;
             token = token->next;
             continue;
         }
@@ -3467,6 +3463,7 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
 
                 /* expand as needed */
                 if (!(start->ref) &&                                        /* must not be self-ref macro */
+                    !(sym->flags & LCC_LXDF_DEFINE_USING) &&                /* must not be recursive-ref macro */
                     ((argp >= sym->args.array.count) ||                     /* could be an argument in variadic arguments */
                      !(sym->nx[argp / 64] & (1 << (argp % 64)))) &&         /* or "not-expand" bit not set for this argument */
                     !(_lcc_macro_scan(self, start, delim, has_defined)))    /* then perform substitution on this argument */
@@ -3506,6 +3503,15 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
                 return 0;
             }
 
+            /* don't expand self-ref macros */
+            if (token->ref || (sym->flags & LCC_LXDF_DEFINE_USING))
+            {
+                free(argvp);
+                token->ref = 1;
+                token = delim->next;
+                continue;
+            }
+
             /* perform function-like macro expansion */
             if (!(_lcc_macro_func(self, (head = lcc_token_new()), sym, argp, argvp)))
             {
@@ -3542,42 +3548,38 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
             }
         }
 
-        /* check for self-referencial macro substitution */
-        for (lcc_token_t *p = token; p != next; p = p->next)
-            if ((p->type == LCC_TK_IDENT) && lcc_string_equals(p->ident, sym->name))
-                p->ref = 1;
+        /* move one token backward to prevent dangling pointer */
+        token = token->prev;
+        sym->flags |= LCC_LXDF_DEFINE_USING;
 
-        /* move to next token, and
-         * mark for scanning again later */
-        again = 1;
-        lcc_array_append(&syms, &sym);
+        /* scan again for nested macros */
+        if (!(_lcc_macro_scan(self, token->next, next, has_defined)))
+        {
+            sym->flags &= ~LCC_LXDF_DEFINE_USING;
+            return 0;
+        }
+
+        /* move to next token */
+        token = next;
+        sym->flags &= ~LCC_LXDF_DEFINE_USING;
     }
 
-    /* no rescan needed */
-    if (!again)
-    {
-        lcc_array_free(&syms);
-        return 1;
-    }
-
-    /* scan again for nested macros if needed */
-    char result = _lcc_macro_scan(
-        self,
-        anchor->next,
-        end,
-        has_defined
-    );
-
-    /* release symbol list */
-    lcc_array_free(&syms);
-    return result;
+    /* substitution successful */
+    return 1;
 }
 
 static char _lcc_macro_subst(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end)
 {
     /* evaluate the macro */
     char warn = 0;
-    char result = _lcc_macro_scan(self, begin, end, &warn);
+    char result = 0;
+    lcc_token_t *head = begin->prev;
+
+    /* do a macro prescan, the scan the token
+     * sequence again for macros to be expanded */
+    if (_lcc_macro_scan(self, begin, end, &warn))
+        if (_lcc_macro_scan(self, head->next, end, &warn))
+            result = 1;
 
     /* check for warnings */
     if (!warn)
@@ -4566,7 +4568,8 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             while (self->tokens.next != &(self->tokens))
                 lcc_token_free(self->tokens.next);
 
-            /* TODO: support pragma */
+            /* not supported */
+            _lcc_lexer_warning(self, "#pragma directive is ignored");
             break;
         }
 
