@@ -4577,7 +4577,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             /* build a new value */
             _lcc_val_t value = {
                 .value = (has_sym == flag_ifdef) ? 1 : 0,
-                .discard = 0,
+                .discard = (has_sym == flag_ifdef),
             };
 
             /* conditional lexer state */
