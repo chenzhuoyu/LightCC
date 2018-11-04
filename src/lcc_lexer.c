@@ -1170,6 +1170,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_2:
             case LCC_LX_SUBSTATE_STRING_ESCAPE_OCT_3:
             case LCC_LX_SUBSTATE_INCLUDE_FILE:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI:
             case LCC_LX_SUBSTATE_NUMBER_DECIMAL_SCI_EXP_SIGN:
@@ -1191,6 +1192,7 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             /* in the middle of parsing integers */
             case LCC_LX_SUBSTATE_NUMBER:
             case LCC_LX_SUBSTATE_NUMBER_ZERO:
+            case LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN_D:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D:
             case LCC_LX_SUBSTATE_NUMBER_INTEGER_OCT:
             {
@@ -1781,6 +1783,16 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
                     break;
                 }
 
+                /* binary specifier */
+                case 'b':
+                case 'B':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
                 /* hexadecimal specifier */
                 case 'x':
                 case 'X':
@@ -1877,59 +1889,84 @@ static void _lcc_handle_substate(lcc_lexer_t *self)
             break;
         }
 
-        /* hexadecimal integers */
+        /* binary or hexadecimal integers */
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN:
+        case LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN_D:
         case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX:
         case LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D:
         {
-            if (((self->ch >= '0') && (self->ch <= '9')) ||
-                ((self->ch >= 'a') && (self->ch <= 'f')) ||
-                ((self->ch >= 'A') && (self->ch <= 'F')))
+            /* binary integers */
+            if (((self->ch == '0') ||
+                 (self->ch == '1')) &&
+                ((self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN) ||
+                 (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN_D)))
+            {
+                self->state = LCC_LX_STATE_SHIFT;
+                self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN_D;
+                lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                break;
+            }
+
+            /* hexadecimal integers */
+            if ((((self->ch >= '0') && (self->ch <= '9')) ||
+                 ((self->ch >= 'a') && (self->ch <= 'f')) ||
+                 ((self->ch >= 'A') && (self->ch <= 'F'))) &&
+                ((self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX) ||
+                 (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D)))
             {
                 self->state = LCC_LX_STATE_SHIFT;
                 self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D;
                 lcc_token_buffer_append(&(self->token_buffer), self->ch);
                 break;
             }
-            else if (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX_D)
+
+            /* check for binary digits */
+            if (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_BIN)
             {
-                switch (self->ch)
-                {
-                    /* unsigned specifier */
-                    case 'u':
-                    case 'U':
-                    {
-                        self->state = LCC_LX_STATE_SHIFT;
-                        self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_U;
-                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                        break;
-                    }
-
-                    /* long specifier */
-                    case 'l':
-                    case 'L':
-                    {
-                        self->state = LCC_LX_STATE_SHIFT;
-                        self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
-                        lcc_token_buffer_append(&(self->token_buffer), self->ch);
-                        break;
-                    }
-
-                    /* not a specifier */
-                    default:
-                    {
-                        _lcc_commit_number(self, LCC_LT_INT, 0);
-                        self->state = LCC_LX_STATE_ACCEPT_KEEP;
-                        break;
-                    }
-                }
-
-                break;
+                _LCC_WRONG_CHAR("Invalid binary digit")
+                return;
             }
-            else
+
+            /* check for hexadecimal digits */
+            if (self->substate == LCC_LX_SUBSTATE_NUMBER_INTEGER_HEX)
             {
                 _LCC_WRONG_CHAR("Invalid hexadecimal digit")
                 return;
             }
+
+            /* check for integer modifiers */
+            switch (self->ch)
+            {
+                /* unsigned specifier */
+                case 'u':
+                case 'U':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_U;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* long specifier */
+                case 'l':
+                case 'L':
+                {
+                    self->state = LCC_LX_STATE_SHIFT;
+                    self->substate = LCC_LX_SUBSTATE_NUMBER_INTEGER_L;
+                    lcc_token_buffer_append(&(self->token_buffer), self->ch);
+                    break;
+                }
+
+                /* not a specifier */
+                default:
+                {
+                    _lcc_commit_number(self, LCC_LT_INT, 0);
+                    self->state = LCC_LX_STATE_ACCEPT_KEEP;
+                    break;
+                }
+            }
+
+            break;
         }
 
         /* octal integers */
