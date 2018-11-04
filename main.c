@@ -64,36 +64,36 @@ int main()
     }
     printf("\n{END}\n");
 
-//    printf("\nPSYMS:\n");
-//    typedef struct __sym
-//    {
-//        long flags;
-//        uint64_t *nx;
-//        lcc_token_t *body;
-//        lcc_string_t *name;
-//        lcc_string_t *vaname;
-//        lcc_string_array_t args;
-//    } sym;
-//    for (size_t i = 0; i < lexer.psyms.capacity; i++)
-//    {
-//        if (lexer.psyms.bucket[i].flags == LCC_MAP_FLAGS_USED)
-//        {
-//            printf("#define %s ", lexer.psyms.bucket[i].key->buf);
-//            sym *s = lexer.psyms.bucket[i].value;
-//            if (!(s->body))
-//                printf("<built-in>");
-//            else
-//            {
-//                for (lcc_token_t *p = s->body->next; p != s->body; p = p->next)
-//                {
-//                    lcc_string_t *x = lcc_token_str(p);
-//                    printf("%s ", x->buf);
-//                    lcc_string_unref(x);
-//                }
-//            }
-//            printf("\n");
-//        }
-//    }
+    printf("\nPSYMS:\n");
+    typedef struct __sym
+    {
+        long flags;
+        uint64_t *nx;
+        lcc_token_t *body;
+        lcc_string_t *name;
+        lcc_string_t *vaname;
+        lcc_string_array_t args;
+    } sym;
+    for (size_t i = 0; i < lexer.psyms.capacity; i++)
+    {
+        if (lexer.psyms.bucket[i].flags == LCC_MAP_FLAGS_USED)
+        {
+            printf("#define %s ", lexer.psyms.bucket[i].key->buf);
+            sym *s = lexer.psyms.bucket[i].value;
+            if (!(s->body))
+                printf("<built-in>");
+            else
+            {
+                for (lcc_token_t *p = s->body->next; p != s->body; p = p->next)
+                {
+                    lcc_string_t *x = lcc_token_str(p);
+                    printf("%s ", x->buf);
+                    lcc_string_unref(x);
+                }
+            }
+            printf("\n");
+        }
+    }
 
     lcc_lexer_free(&lexer);
     return 0;

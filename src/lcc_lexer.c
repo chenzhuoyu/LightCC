@@ -5333,16 +5333,14 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     lcc_lexer_define(self, "__STDC_HOSTED__", "1");
     lcc_lexer_define(self, "__STDC_VERSION__", "199901L");
 
-    /* platform specific symbols */
-    lcc_lexer_define(self, "unix", "1");
-    lcc_lexer_define(self, "__unix", "1");
-    lcc_lexer_define(self, "__unix__", "1");
-    lcc_lexer_define(self, "__x86_64__", "1");
-
     /* data model */
+    lcc_lexer_define(self, "_LP64", "1");
     lcc_lexer_define(self, "__LP64__", "1");
-    lcc_lexer_define(self, "__SIZE_TYPE__", "unsigned long");
-    lcc_lexer_define(self, "__PTRDIFF_TYPE__", "long");
+
+    /* platform specific symbols */
+    lcc_lexer_define(self, "__unix__", "1");
+    lcc_lexer_define(self, "__amd64__", "1");
+    lcc_lexer_define(self, "__x86_64__", "1");
 
     /* assembler specified macros (LightCC uses GAS syntax) */
     lcc_lexer_define(self, "__REGISTER_PREFIX__", "%");
