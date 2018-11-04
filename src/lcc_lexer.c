@@ -4568,8 +4568,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             while (self->tokens.next != &(self->tokens))
                 lcc_token_free(self->tokens.next);
 
-            /* not supported */
-            _lcc_lexer_warning(self, "#pragma directive is ignored");
+            // TODO: impelemnt this
             break;
         }
 
