@@ -793,13 +793,6 @@ void lcc_token_buffer_append(lcc_token_buffer_t *self, char ch)
 
 /*** Lexer Object ***/
 
-#define _LCC_MAX_MACRO_ARGS         65536
-#define _LCC_MAX_MACRO_BITS         (sizeof(uint64_t) * __CHAR_BIT__)
-#define _LCC_MAX_MACRO_NBMP         (_LCC_MAX_MACRO_ARGS / _LCC_MAX_MACRO_BITS)
-
-#define _LCC_MACRO_NX_SET(sym, n)   (sym)->nx[(n) / _LCC_MAX_MACRO_BITS] |= (1 << ((n) % _LCC_MAX_MACRO_BITS))
-#define _LCC_MACRO_NX_TEST(sym, n)  ((sym)->nx[(n) / _LCC_MAX_MACRO_BITS] & (1 << ((n) % _LCC_MAX_MACRO_BITS)))
-
 typedef char (_lcc_macro_extension_fn)(
     lcc_lexer_t *self,
     lcc_token_t **begin,
@@ -809,7 +802,6 @@ typedef char (_lcc_macro_extension_fn)(
 typedef struct __lcc_sym_t
 {
     long flags;
-    uint64_t *nx;
     lcc_token_t *body;
     lcc_string_t *name;
     lcc_string_t *vaname;
@@ -1102,7 +1094,6 @@ static void _lcc_sym_free(_lcc_sym_t *self)
         lcc_string_unref(self->vaname);
 
     /* clear other fields */
-    free(self->nx);
     lcc_string_unref(self->name);
     lcc_string_array_free(&(self->args));
 }
@@ -3268,7 +3259,48 @@ static void _lcc_macro_disp(lcc_token_t **pos, lcc_token_t **next, lcc_token_t *
     lcc_token_free(h);
 }
 
-static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sym, size_t argc, lcc_token_t **argv)
+static char _lcc_macro_scan(
+    lcc_lexer_t *self,
+    lcc_token_t *begin,
+    lcc_token_t *end,
+    char        *has_defined
+);
+
+static char _lcc_macro_attach(
+    lcc_lexer_t *self,
+    lcc_token_t *input,
+    lcc_token_t *head,
+    lcc_token_t *begin,
+    lcc_token_t *end,
+    char        *has_defined)
+{
+    /* header tokens */
+    lcc_token_t *t = begin;
+    lcc_token_t *h = head->prev;
+
+    /* perform substitution */
+    while (t != end)
+    {
+        lcc_token_attach(head, lcc_token_copy(t));
+        t = t->next;
+    }
+
+    /* only expand when not concatenating */
+    if (((input->next->type != LCC_TK_OPERATOR) ||
+         (input->next->operator != LCC_OP_CONCAT)) &&
+        !(_lcc_macro_scan(self, h->next, head, has_defined)))
+        return 0;
+
+    return 1;
+}
+
+static char _lcc_macro_func(
+    lcc_lexer_t  *self,
+    lcc_token_t  *head,
+    _lcc_sym_t   *sym,
+    size_t        argc,
+    lcc_token_t **argv,
+    char         *has_defined)
 {
     /* substitution result */
     ssize_t m;
@@ -3292,9 +3324,13 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
                 continue;
             }
 
-            /* perform substitution */
-            for (lcc_token_t *t = argv[n]->next; t != argv[n + 1]; t = t->next)
-                lcc_token_attach(head, lcc_token_copy(t));
+            /* beginning and ending tokens */
+            lcc_token_t *to = argv[n + 1];
+            lcc_token_t *from = argv[n]->next;
+
+            /* attach token sequence, then substitute as needed */
+            if (!(_lcc_macro_attach(self, p, head, from, to, has_defined)))
+                return 0;
 
             /* skip the token */
             p = p->next;
@@ -3318,8 +3354,15 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
 
             /* attach all variadic arguments, including comma */
             if (argc > sym->args.array.count)
-                for (lcc_token_t *t = argv[sym->args.array.count]->next; t != argv[argc]; t = t->next)
-                    lcc_token_attach(head, lcc_token_copy(t));
+            {
+                /* beginning and ending tokens */
+                lcc_token_t *to = argv[argc];
+                lcc_token_t *from = argv[sym->args.array.count]->next;
+
+                /* attach token sequence, then substitute as needed */
+                if (!(_lcc_macro_attach(self, p, head, from, to, has_defined)))
+                    return 0;
+            }
 
             /* skip the token */
             p = p->next;
@@ -3360,6 +3403,31 @@ static char _lcc_macro_func(lcc_lexer_t *self, lcc_token_t *head, _lcc_sym_t *sy
                 p = p->next->next;
                 continue;
             }
+        }
+
+        /* concatenation, don't expand the following argument */
+        if ((p->type == LCC_TK_OPERATOR) &&
+            (p->operator == LCC_OP_CONCAT) &&
+            (p->next->type == LCC_TK_IDENT) &&
+            ((n = lcc_string_array_index(&(sym->args), p->next->ident)) >= 0))
+        {
+            /* skip the "##" and the identifier */
+            lcc_token_attach(head, lcc_token_copy(p));
+            p = p->next->next;
+
+            /* beginning and ending tokens */
+            lcc_token_t *to = argv[n + 1];
+            lcc_token_t *from = argv[n]->next;
+
+            /* perform substitution */
+            while (from != to)
+            {
+                lcc_token_attach(head, lcc_token_copy(from));
+                from = from->next;
+            }
+
+            /* continue scanning */
+            continue;
         }
 
         /* apply stringnize */
@@ -3528,17 +3596,6 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
                     argvp = realloc(argvp, argcap * sizeof(lcc_token_t *));
                 }
 
-                /* expand as needed */
-                if (!(start->ref) &&                                        /* must not be self-ref macro */
-                    !(sym->flags & LCC_LXDF_DEFINE_USING) &&                /* must not be recursive-ref macro */
-                    ((argp >= sym->args.array.count) ||                     /* could be an argument in variadic arguments */
-                     !(_LCC_MACRO_NX_TEST(sym, argp))) &&                   /* or "not-expand" bit not set for this argument */
-                    !(_lcc_macro_scan(self, start, delim, has_defined)))    /* then perform substitution on this argument */
-                {
-                    free(argvp);
-                    return 0;
-                }
-
                 /* skip the comma */
                 start = delim->next;
                 argvp[++argp] = delim;
@@ -3580,7 +3637,7 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
             }
 
             /* perform function-like macro expansion */
-            if (!(_lcc_macro_func(self, (head = lcc_token_new()), sym, argp, argvp)))
+            if (!(_lcc_macro_func(self, (head = lcc_token_new()), sym, argp, argvp, has_defined)))
             {
                 free(argvp);
                 lcc_token_clear(head);
@@ -3716,13 +3773,6 @@ static void _lcc_handle_define(lcc_lexer_t *self)
                 /* named argument */
                 case LCC_TK_IDENT:
                 {
-                    /* can have at most _LCC_MAX_MACRO_ARGS macro arguments */
-                    if (self->macro_args.array.count >= _LCC_MAX_MACRO_ARGS)
-                    {
-                        _lcc_lexer_error(self, "Too many macro arguments");
-                        return;
-                    }
-
                     /* check for existing names */
                     if (lcc_string_array_index(&(self->macro_args), self->tokens.next->ident) >= 0)
                     {
@@ -4344,7 +4394,6 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             /* create a new symbol */
             _lcc_sym_t old;
             _lcc_sym_t sym = {
-                .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),
                 .ext = NULL,
                 .body = lcc_token_new(),
                 .name = self->macro_name,
@@ -4357,6 +4406,10 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             if (!(sym.flags & LCC_LXDF_DEFINE_F))
                 sym.flags |= LCC_LXDF_DEFINE_O;
 
+            /* check for pre-included file */
+            if (self->file->flags & LCC_FF_SYS)
+                sym.flags |= LCC_LXDF_DEFINE_SYS;
+
             /* move everything remaining to macro body */
             if (self->tokens.next != &(self->tokens))
             {
@@ -4367,64 +4420,6 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 self->tokens.prev = &(self->tokens);
                 self->tokens.next = &(self->tokens);
             }
-
-            /* token header */
-            ssize_t n;
-            lcc_token_t *p = sym.body->next;
-
-            /* search for arguments that don't need expansion */
-            while (p != sym.body)
-            {
-                /* special operators */
-                if (p->type == LCC_TK_OPERATOR)
-                {
-                    /* mark identifier after "#" as not-expand (NX) */
-                    if (p->operator == LCC_OP_STRINGIZE)
-                    {
-                        /* must be an argument after "#" */
-                        if (p->next->type != LCC_TK_IDENT)
-                        {
-                            _lcc_sym_free(&sym);
-                            _lcc_lexer_error(self, "'#' is not followed by a macro parameter");
-                            return;
-                        }
-
-                        /* mark as not-expand */
-                        if ((n = lcc_string_array_index(&(sym.args), p->next->ident)) >= 0)
-                            _LCC_MACRO_NX_SET(&sym, n);
-                    }
-
-                    /* mark identifier before and after "##" as not-expand (NX) */
-                    else if (p->operator == LCC_OP_CONCAT)
-                    {
-                        /* can't be placed in either side */
-                        if ((p->prev == sym.body) ||
-                            (p->next == sym.body))
-                        {
-                            _lcc_sym_free(&sym);
-                            _lcc_lexer_error(self, "'##' cannot appear at either side of macro expansion");
-                            return;
-                        }
-
-                        /* before "##" */
-                        if ((p->prev->type == LCC_TK_IDENT) &&
-                            ((n = lcc_string_array_index(&(sym.args), p->prev->ident)) >= 0))
-                            _LCC_MACRO_NX_SET(&sym, n);
-
-                        /* after "##" */
-                        if ((p->next->type == LCC_TK_IDENT) &&
-                            ((n = lcc_string_array_index(&(sym.args), p->next->ident)) >= 0))
-                            _LCC_MACRO_NX_SET(&sym, n);
-                    }
-                }
-
-                /* move to next token */
-                p = p->next;
-            }
-
-            /* check for pre-included file */
-            if (self->file->flags & LCC_FF_SYS)
-                sym.flags |= LCC_LXDF_DEFINE_SYS;
 
             /* add to predefined symbols */
             if (!(lcc_map_set(&(self->psyms), self->macro_name, &old, &sym)))
@@ -4773,7 +4768,6 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
 #define _LCC_ADD_MACRO_EXT_F(ext_name) {                        \
     _lcc_sym_t __macro_ext_ ## ext_name = {                     \
-        .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),    \
         .ext = &__lcc_macro_ext_ ## ext_name,                   \
         .body = NULL,                                           \
         .name = lcc_string_from(# ext_name),                    \
@@ -4792,7 +4786,6 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
 #define _LCC_ADD_MACRO_EXT_O(ext_name) {                        \
     _lcc_sym_t __macro_ext_ ## ext_name = {                     \
-        .nx = calloc(_LCC_MAX_MACRO_NBMP, sizeof(uint64_t)),    \
         .ext = &__lcc_macro_ext_ ## ext_name,                   \
         .body = NULL,                                           \
         .name = lcc_string_from(# ext_name),                    \
@@ -5184,6 +5177,7 @@ static char _lcc_check_include(
         /* check for end of tokens */
         if (next == end)
         {
+            lcc_string_unref(path);
             _lcc_lexer_error(self, "Expected \"FILENAME\" or <FILENAME>");
             return 0;
         }
@@ -5211,6 +5205,7 @@ static char _lcc_check_include(
     if ((next->type != LCC_TK_OPERATOR) ||
         (next->operator != LCC_OP_RBRACKET))
     {
+        lcc_string_unref(path);
         _lcc_lexer_error(self, "Missing ')' after '__has_include'");
         return 0;
     }
@@ -5235,6 +5230,7 @@ static char _lcc_check_include(
     /* replace the old token */
     lcc_token_free(*begin);
     lcc_token_attach((*begin = tail), new);
+    lcc_string_unref(path);
     return 1;
 }
 
