@@ -809,7 +809,7 @@ typedef struct __lcc_sym_t
     _lcc_macro_extension_fn *ext;
 } _lcc_sym_t;
 
-typedef struct __lcc_value_t
+typedef struct __lcc_val_t
 {
     char discard;
     intmax_t value;
