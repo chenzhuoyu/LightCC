@@ -4360,6 +4360,10 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         /* "#include" directive */
         case LCC_LXDN_INCLUDE:
         {
+            /* perform a macro expansion first */
+            if (!(_lcc_macro_subst(self, self->tokens.next, &(self->tokens))))
+                return;
+
             /* extract the file name */
             lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing include file name");
             lcc_string_t *fname = _LCC_ENSURE_RAWSTR(self, token, "Include file name must be a string");
