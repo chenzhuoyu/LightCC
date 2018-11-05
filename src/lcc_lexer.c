@@ -4767,7 +4767,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
     }
 
 #define _LCC_ADD_MACRO_EXT_F(ext_name) {                        \
-    _lcc_sym_t __macro_ext_ ## ext_name = {                     \
+    _lcc_sym_t __sym_macro_ext_ ## ext_name = {                 \
         .ext = &__lcc_macro_ext_ ## ext_name,                   \
         .body = NULL,                                           \
         .name = lcc_string_from(# ext_name),                    \
@@ -4778,14 +4778,14 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                                                                 \
     lcc_map_set(                                                \
         &(self->psyms),                                         \
-        __macro_ext_ ## ext_name.name,                          \
+        __sym_macro_ext_ ## ext_name.name,                      \
         NULL,                                                   \
-        &__macro_ext_ ## ext_name                               \
+        &__sym_macro_ext_ ## ext_name                           \
     );                                                          \
 }
 
 #define _LCC_ADD_MACRO_EXT_O(ext_name) {                        \
-    _lcc_sym_t __macro_ext_ ## ext_name = {                     \
+    _lcc_sym_t __sym_macro_ext_ ## ext_name = {                 \
         .ext = &__lcc_macro_ext_ ## ext_name,                   \
         .body = NULL,                                           \
         .name = lcc_string_from(# ext_name),                    \
@@ -4796,9 +4796,9 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                                                                 \
     lcc_map_set(                                                \
         &(self->psyms),                                         \
-        __macro_ext_ ## ext_name.name,                          \
+        __sym_macro_ext_ ## ext_name.name,                      \
         NULL,                                                   \
-        &__macro_ext_ ## ext_name                               \
+        &__sym_macro_ext_ ## ext_name                           \
     );                                                          \
 }
 
