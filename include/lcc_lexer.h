@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "lcc_map.h"
+#include "lcc_set.h"
 #include "lcc_array.h"
 #include "lcc_utils.h"
 #include "lcc_string.h"
@@ -397,6 +398,11 @@ typedef struct _lcc_lexer_t
     lcc_string_array_t include_paths;
     lcc_string_array_t library_paths;
 
+    /* built-in features */
+    lcc_set_t builtins;
+    lcc_set_t features;
+    lcc_set_t extensions;
+
     /* state machine */
     long flags;
     lcc_lexer_state_t state;
@@ -444,6 +450,10 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self);
 
 void lcc_lexer_undef(lcc_lexer_t *self, const char *name);
 void lcc_lexer_define(lcc_lexer_t *self, const char *name, const char *value);
+
+void lcc_lexer_add_feature(lcc_lexer_t *self, const char *name);
+void lcc_lexer_add_builtin(lcc_lexer_t *self, const char *name);
+void lcc_lexer_add_extension(lcc_lexer_t *self, const char *name);
 
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path);
 void lcc_lexer_add_library_path(lcc_lexer_t *self, const char *path);

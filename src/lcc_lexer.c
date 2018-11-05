@@ -4809,32 +4809,97 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
     );                                                          \
 }
 
+static inline void _lcc_range_subst(lcc_token_t **from, lcc_token_t *to, lcc_token_t *token)
+{
+    /* remove old tokens */
+    while ((*from)->next != to)
+        lcc_token_free((*from)->next);
+
+    /* replace the old token */
+    lcc_token_free(*from);
+    lcc_token_attach((*from = to), token);
+}
+
+static inline void _lcc_single_subst(lcc_token_t **at, lcc_token_t *token)
+{
+    /* substitute a single token (from self to next) */
+    _lcc_range_subst(at, (*at)->next, token);
+}
+
+static inline lcc_string_t *_lcc_extract_ident(
+    lcc_lexer_t  *self,
+    lcc_token_t **begin,
+    lcc_token_t  *end,
+    lcc_token_t **tail,
+    const char   *name)
+{
+    /* token sequences */
+    lcc_token_t *n0 = *begin;
+    lcc_token_t *n1 = n0->next;
+    lcc_token_t *n2 = n1->next;
+    lcc_token_t *n3 = n2->next;
+    lcc_string_t *ident;
+
+    /* the first token must be an identifier */
+    if (n0->type != LCC_TK_IDENT)
+    {
+        fprintf(stderr, "*** FATAL: non-identifier macro\n");
+        abort();
+    }
+
+    /* check for beginning "(" */
+    if ((n1 == end) ||
+        (n1->type != LCC_TK_OPERATOR) ||
+        (n1->operator != LCC_OP_LBRACKET))
+    {
+        _lcc_lexer_error(self, "Missing '(' after '%s'", name);
+        return NULL;
+    }
+
+    /* check for EOL */
+    if ((n2 == end) || (n3 == end))
+    {
+        _lcc_lexer_error(self, "Unterminated function-like macro invocation");
+        return NULL;
+    }
+
+    /* check for identifier type and ending ")" */
+    if ((n2->type != LCC_TK_IDENT) ||
+        (n3->type != LCC_TK_OPERATOR) ||
+        (n3->operator != LCC_OP_RBRACKET))
+    {
+        _lcc_lexer_error(self, "Builtin feature check macro requires a single parenthesized identifier");
+        return NULL;
+    }
+
+    /* store the tail and name */
+    *tail = *begin = n3->next;
+    ident = lcc_string_ref(n2->ident);
+
+    /* release tokens */
+    lcc_token_free(n0);
+    lcc_token_free(n1);
+    lcc_token_free(n2);
+    lcc_token_free(n3);
+    return ident;
+}
+
 /** Object-like built-in macros **/
 
 _LCC_MACRO_EXT(__FILE__)
 {
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_raw(
-        lcc_string_copy(self->fname),
-        lcc_string_copy(self->fname)
-    );
+    /* dump file name */
+    lcc_string_t *src = lcc_string_ref(self->fname);
+    lcc_string_t *value = lcc_string_ref(self->fname);
 
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_raw(src, value));
     return 1;
 }
 
 _LCC_MACRO_EXT(__LINE__)
 {
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_int(self->row);
-
-    /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_int(self->row));
     return 1;
 }
 
@@ -4850,16 +4915,12 @@ _LCC_MACRO_EXT(__DATE__)
     else
         strftime(s, sizeof(s), "%b %e %Y", &tm);
 
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_raw(
-        lcc_string_from(s),
-        lcc_string_from(s)
-    );
+    /* create date string */
+    lcc_string_t *src = lcc_string_from(s);
+    lcc_string_t *value = lcc_string_from(s);
 
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_raw(src, value));
     return 1;
 }
 
@@ -4875,16 +4936,12 @@ _LCC_MACRO_EXT(__TIME__)
     else
         strftime(s, sizeof(s), "%T", &tm);
 
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_raw(
-        lcc_string_from(s),
-        lcc_string_from(s)
-    );
+    /* create time string */
+    lcc_string_t *src = lcc_string_from(s);
+    lcc_string_t *value = lcc_string_from(s);
 
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_raw(src, value));
     return 1;
 }
 
@@ -4901,43 +4958,30 @@ _LCC_MACRO_EXT(__TIMESTAMP__)
     else
         strftime(s, sizeof(s), "%a %b %e %T %Y", &tm);
 
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_raw(
-        lcc_string_from(s),
-        lcc_string_from(s)
-    );
+    /* create timestamp string */
+    lcc_string_t *src = lcc_string_from(s);
+    lcc_string_t *value = lcc_string_from(s);
 
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_raw(src, value));
     return 1;
 }
 
 _LCC_MACRO_EXT(__BASE_FILE__)
 {
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_raw(
-        lcc_string_copy(LCC_ARRAY_AT(&(self->files), 0, lcc_file_t).display),
-        lcc_string_copy(LCC_ARRAY_AT(&(self->files), 0, lcc_file_t).display)
-    );
+    /* dump display name */
+    lcc_file_t *fp = self->files.items;
+    lcc_string_t *src = lcc_string_ref(fp->display);
+    lcc_string_t *value = lcc_string_ref(fp->display);
 
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_raw(src, value));
     return 1;
 }
 
 _LCC_MACRO_EXT(__INCLUDE_LEVEL__)
 {
-    /* create a new token */
-    lcc_token_t *p = (*begin)->next;
-    lcc_token_t *new = lcc_token_from_int(self->files.count - 1);
-
-    /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = p), new);
+    _lcc_single_subst(begin, lcc_token_from_int(self->files.count - 1));
     return 1;
 }
 
@@ -4964,7 +5008,7 @@ _LCC_MACRO_EXT(defined)
         {
             brk = 0;
             token = token->next;
-            ident = lcc_string_copy(token->prev->ident);
+            ident = lcc_string_ref(token->prev->ident);
             break;
         }
 
@@ -4985,7 +5029,7 @@ _LCC_MACRO_EXT(defined)
 
             /* extract the identifier */
             token = token->next;
-            ident = lcc_string_copy(token->prev->ident);
+            ident = lcc_string_ref(token->prev->ident);
             break;
         }
 
@@ -5021,19 +5065,33 @@ _LCC_MACRO_EXT(defined)
         return 0;
     }
 
-    /* remove old tokens */
-    while ((*begin)->next != token)
-        lcc_token_free((*begin)->next);
-
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach(token, lcc_token_from_int(lcc_map_get(&(self->psyms), ident, NULL)));
-
-    /* update the head pointer */
-    *begin = token;
+    _lcc_range_subst(begin, token, lcc_token_from_int(lcc_map_get(&(self->psyms), ident, NULL)));
     lcc_string_unref(ident);
     return 1;
 }
+
+#define _LCC_FEATURE_CHECK(type)                                                                \
+{                                                                                               \
+    /* extract the identifier */                                                                \
+    lcc_token_t *tail;                                                                          \
+    lcc_string_t *ident = _lcc_extract_ident(self, begin, end, &tail, "__has_" #type);          \
+                                                                                                \
+    /* check for errors */                                                                      \
+    if (!ident)                                                                                 \
+        return 0;                                                                               \
+                                                                                                \
+    /* attach the result */                                                                     \
+    lcc_token_attach(tail, lcc_token_from_int(lcc_set_contains(&(self->type ## s), ident)));    \
+    lcc_string_unref(ident);                                                                    \
+    return 1;                                                                                   \
+}
+
+_LCC_MACRO_EXT(__has_builtin  ) _LCC_FEATURE_CHECK(builtin  )
+_LCC_MACRO_EXT(__has_feature  ) _LCC_FEATURE_CHECK(feature  )
+_LCC_MACRO_EXT(__has_extension) _LCC_FEATURE_CHECK(extension)
+
+#undef _LCC_FEATURE_CHECK
 
 static char _lcc_check_include(
     lcc_lexer_t *self,
@@ -5249,6 +5307,11 @@ void lcc_lexer_free(lcc_lexer_t *self)
     while (self->tokens.next != &(self->tokens))
         lcc_token_free(self->tokens.next);
 
+    /* clear feature tables */
+    lcc_set_free(&(self->builtins));
+    lcc_set_free(&(self->features));
+    lcc_set_free(&(self->extensions));
+
     /* clear directive related tables */
     lcc_map_free(&(self->psyms));
     lcc_string_array_free(&(self->sccs_msgs));
@@ -5285,6 +5348,11 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     lcc_map_init(&(self->psyms), sizeof(_lcc_sym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
     lcc_array_init(&(self->eval_stack), sizeof(_lcc_val_t), NULL, NULL);
+
+    /* feature sets */
+    lcc_set_init(&(self->builtins));
+    lcc_set_init(&(self->features));
+    lcc_set_init(&(self->extensions));
 
     /* token list and token buffer */
     lcc_token_init(&(self->tokens));
@@ -5370,6 +5438,11 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     _LCC_ADD_MACRO_EXT_F(defined);
     _LCC_ADD_MACRO_EXT_F(__has_include);
     _LCC_ADD_MACRO_EXT_F(__has_include_next);
+
+    /* built-in feature testing macros */
+    _LCC_ADD_MACRO_EXT_F(__has_builtin);
+    _LCC_ADD_MACRO_EXT_F(__has_feature);
+    _LCC_ADD_MACRO_EXT_F(__has_extension);
 
     /* pseudo-macro "__func__" and "__FUNCTION__" */
     _LCC_ADD_MACRO_EXT_O(__func__);
@@ -5789,6 +5862,10 @@ void lcc_lexer_define(lcc_lexer_t *self, const char *name, const char *value)
         );
     }
 }
+
+void lcc_lexer_add_builtin(lcc_lexer_t *self, const char *name) { lcc_set_add_string(&(self->builtins), name); }
+void lcc_lexer_add_feature(lcc_lexer_t *self, const char *name) { lcc_set_add_string(&(self->features), name); }
+void lcc_lexer_add_extension(lcc_lexer_t *self, const char *name) { lcc_set_add_string(&(self->extensions), name); }
 
 void lcc_lexer_add_include_path(lcc_lexer_t *self, const char *path)
 {

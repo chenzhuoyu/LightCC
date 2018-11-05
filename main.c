@@ -16,53 +16,76 @@ int main()
 
     int c = 0;
     int n = 0;
+    int f = 0;
     while ((token = lcc_lexer_next(&lexer)))
     {
         if (token->type == LCC_TK_OPERATOR &&
             token->operator == LCC_OP_LBLOCK)
         {
+            if (f)
+            {
+                f = 0;
+                n -= 4;
+                printf("%*s}\n", n, "");
+            }
+
+            printf("%*s{\n", !c * n, "");
             c = 0;
             n += 4;
-            printf("{\n%*s", n, " ");
         }
         else if (token->type == LCC_TK_OPERATOR &&
                  token->operator == LCC_OP_RBLOCK)
         {
-            n -= 4;
-            if (c)
+            if (f)
             {
                 c = 0;
-                printf("\n");
+                n -= 4;
+                printf("%*s}\n", n, "");
             }
-            if (!n)
-                printf("\r}\n");
-            else
-                printf("\r%*s}\n%*s", n, " ", n, " ");
+
+            f = 1;
         }
         else if (token->type == LCC_TK_OPERATOR &&
-                 (token->operator == LCC_OP_SEMICOLON ||
-                  token->operator == LCC_OP_LBLOCK ||
-                  token->operator == LCC_OP_RBLOCK))
+                 token->operator == LCC_OP_SEMICOLON)
         {
-            lcc_string_t *s = lcc_token_str(token);
-            if (!n)
-                printf("%s \n", s->buf);
-            else
-                printf("%s \n%*s", s->buf, n, " ");
+            if (f)
+            {
+                f = 0;
+                n -= 4;
+                printf("%*s} ", n, "");
+            }
+
             c = 0;
-            lcc_string_unref(s);
+            printf(";\n");
         }
         else
         {
+            if (f)
+            {
+                f = 0;
+                c = 0;
+                n -= 4;
+                printf("%*s}\n", n, "");
+            }
+
             lcc_string_t *s = lcc_token_str(token);
-            c++;
+            if (!(c++))
+                printf("%*s", n, "");
             printf("%s ", s->buf);
             lcc_string_unref(s);
         }
 
         lcc_token_free(token);
     }
-    printf("\n{END}\n");
+
+    /* what's wrong with Clion DFA ?? */
+    #pragma clang diagnostic push
+    #pragma ide diagnostic ignored "OCDFAInspection"
+
+    if (f)
+        printf("}\n");
+
+    #pragma clang diagnostic pop
 
 //    printf("\nPSYMS:\n");
 //    typedef struct __sym

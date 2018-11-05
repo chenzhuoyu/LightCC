@@ -14,6 +14,7 @@ set(LIGHTCC
         include/lcc_builtin_types.i
         include/lcc_lexer.h
         include/lcc_map.h
+        include/lcc_set.h
         include/lcc_string.h
         include/lcc_string_array.h
         include/lcc_utils.h
