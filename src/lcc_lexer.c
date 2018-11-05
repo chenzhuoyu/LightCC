@@ -5018,6 +5018,12 @@ _LCC_MACRO_EXT(__TIME__)
     return 1;
 }
 
+_LCC_MACRO_EXT(__COUNTER__)
+{
+    _lcc_single_subst(begin, lcc_token_from_int(self->counter++));
+    return 1;
+}
+
 _LCC_MACRO_EXT(__TIMESTAMP__)
 {
     char s[32] = {};
@@ -5452,6 +5458,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     /* initial flags and GNU extensions */
     self->flags = 0;
     self->gnuext = 0;
+    self->counter = 0;
 
     /* default error handling */
     self->error_fn = _lcc_error_default;
@@ -5500,6 +5507,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
     _LCC_ADD_MACRO_EXT_O(__LINE__);
     _LCC_ADD_MACRO_EXT_O(__DATE__);
     _LCC_ADD_MACRO_EXT_O(__TIME__);
+    _LCC_ADD_MACRO_EXT_O(__COUNTER__);
     _LCC_ADD_MACRO_EXT_O(__TIMESTAMP__);
     _LCC_ADD_MACRO_EXT_O(__BASE_FILE__);
     _LCC_ADD_MACRO_EXT_O(__INCLUDE_LEVEL__);

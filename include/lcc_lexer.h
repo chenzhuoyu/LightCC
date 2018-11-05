@@ -399,6 +399,7 @@ typedef struct _lcc_lexer_t
     lcc_string_array_t library_paths;
 
     /* built-in features */
+    int64_t counter;
     lcc_set_t builtins;
     lcc_set_t features;
     lcc_set_t extensions;
