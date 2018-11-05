@@ -4456,8 +4456,26 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             }
 
             /* redefine to same token sequence doesn't considered as "macro redefined" */
-            if ((a != sym.body) || (b != old.body))
+            if ((a != sym.body) ||
+                (b != old.body) ||
+                (sym.flags != old.flags) ||
+                (sym.args.array.count != old.args.array.count))
                 _lcc_lexer_warning(self, "Symbol '%s' redefined", self->macro_name->buf);
+
+            /* also check argument names */
+            for (size_t i = 0; i < sym.args.array.count; i++)
+            {
+                /* get argument name at index `i` */
+                lcc_string_t *n1 = lcc_string_array_get(&(sym.args), i);
+                lcc_string_t *n2 = lcc_string_array_get(&(old.args), i);
+
+                /* should be the same */
+                if (!(lcc_string_equals(n1, n2)))
+                {
+                    _lcc_lexer_warning(self, "Symbol '%s' redefined", self->macro_name->buf);
+                    break;
+                }
+            }
 
             /* release the old symbol */
             _lcc_sym_free(&old);
