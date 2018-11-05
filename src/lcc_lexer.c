@@ -5215,21 +5215,15 @@ static char _lcc_check_include(
     if (is_next) self->flags |= LCC_LXDF_INCLUDE_NEXT;
 
     /* try load the include file */
-    char result = _lcc_load_include(self, path, 1);
-    lcc_token_t *new = lcc_token_from_int(result);
     lcc_token_t *tail = next->next;
+    lcc_token_t *token = lcc_token_from_int(_lcc_load_include(self, path, 1));
 
     /* reset flags */
     if (is_sys) self->flags &= ~LCC_LXDF_INCLUDE_SYS;
     if (is_next) self->flags &= ~LCC_LXDF_INCLUDE_NEXT;
 
-    /* remove old tokens */
-    while ((*begin)->next != tail)
-        lcc_token_free((*begin)->next);
-
     /* replace the old token */
-    lcc_token_free(*begin);
-    lcc_token_attach((*begin = tail), new);
+    _lcc_range_subst(begin, tail, token);
     lcc_string_unref(path);
     return 1;
 }
