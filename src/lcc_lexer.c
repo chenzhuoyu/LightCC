@@ -5821,10 +5821,11 @@ void lcc_lexer_undef(lcc_lexer_t *self, const char *name)
         abort();
     }
 
-    /* remove the symbol from preprocessor table */
-    lcc_string_t *key = lcc_string_from(name);
-    lcc_map_pop(&(self->psyms), key, NULL);
-    lcc_string_unref(key);
+    /* use "#undef" to remove the symbol */
+    lcc_string_array_append(
+        &(self->file->lines),
+        lcc_string_from_format("#undef %s", name)
+    );
 }
 
 void lcc_lexer_define(lcc_lexer_t *self, const char *name, const char *value)
