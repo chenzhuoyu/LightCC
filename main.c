@@ -8,6 +8,7 @@ int main()
     lcc_lexer_t lexer;
     lcc_token_t *token;
     lcc_lexer_init(&lexer, lcc_file_open("/Users/Oxygen/Sources/tests/lcc_test.c"));
+    lcc_lexer_set_gnu_ext(&lexer, LCC_LX_GNUX_VA_OPT_MACRO, 1);
     lcc_lexer_add_include_path(&lexer, "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include");
     lcc_lexer_add_include_path(&lexer, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/10.0.0/include");
     lcc_lexer_add_include_path(&lexer, "/usr/local/include");

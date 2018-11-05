@@ -440,6 +440,7 @@ typedef enum _lcc_lexer_gnu_ext_t
 {
     LCC_LX_GNUX_DOLLAR_IDENT    = 0x00000001,       /* dollar sign character '$' in identifiers */
     LCC_LX_GNUX_ESCAPE_CHAR     = 0x00000002,       /* '\e' escape character */
+    LCC_LX_GNUX_VA_OPT_MACRO    = 0x00000004,       /* '__VA_OPT__' macro */
 } lcc_lexer_gnu_ext_t;
 
 void lcc_lexer_free(lcc_lexer_t *self);

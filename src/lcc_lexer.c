@@ -1008,8 +1008,9 @@ static inline char _lcc_commit_ident(lcc_lexer_t *self, char keep_tail)
     if ((!(self->flags & LCC_LXDF_DEFINE_VAR) ||                /* must be variadic macro */
           (self->flags & LCC_LXDF_DEFINE_NVAR) ||               /* but must not be named variadic macro */
          !(self->flags & LCC_LXDF_DEFINE_FINE)) &&              /* must finish parsing the declaration */
-        (!(strcmp(self->token_buffer.buf, "__VA_OPT__")) ||     /* must not be "__VA_OPT__" */
-         !(strcmp(self->token_buffer.buf, "__VA_ARGS__"))))     /* must not be "__VA_ARGS__" */
+        (!(strcmp(self->token_buffer.buf, "__VA_ARGS__")) ||    /* must not be "__VA_ARGS__" */
+         ((self->gnuext & LCC_LX_GNUX_VA_OPT_MACRO) &&          /* with "__VA_OPT__" extension enabled, */
+          !(strcmp(self->token_buffer.buf, "__VA_OPT__")))))    /* must not be "__VA_OPT__" */
     {
         _lcc_lexer_error(self, "'%s' is not allowed here", self->token_buffer.buf);
         return 0;
@@ -3405,6 +3406,63 @@ static char _lcc_macro_func(
             }
         }
 
+        /* only apply when this extension enabled */
+        if (self->gnuext & LCC_LX_GNUX_VA_OPT_MACRO)
+        {
+            /* special case of "__VA_OPT__(...)" */
+            if ((p->type == LCC_TK_IDENT) &&
+                !(strcmp(p->ident->buf, "__VA_OPT__")))
+            {
+                /* check for next token */
+                if ((p->next == sym->body) ||
+                    (p->next->type != LCC_TK_OPERATOR) ||
+                    (p->next->operator != LCC_OP_LBRACKET))
+                {
+                    _lcc_lexer_error(self, "Missing '(' after '__VA_OPT__'");
+                    return 0;
+                }
+
+                /* move past the "(" */
+                p = p->next;
+                p = p->next;
+
+                /* search pointers */
+                size_t nbrk = 1;
+                lcc_token_t *end = p;
+
+                /* counting brackets */
+                while (nbrk && (end != sym->body))
+                {
+                    /* must be an operator */
+                    if (end->type == LCC_TK_OPERATOR)
+                    {
+                        if (end->operator == LCC_OP_LBRACKET) nbrk++;
+                        if (end->operator == LCC_OP_RBRACKET) nbrk--;
+                    }
+
+                    /* move to next token */
+                    end = end->next;
+                }
+
+                /* check for bracket balancing */
+                if (nbrk)
+                {
+                    _lcc_lexer_error(self, "Unterminated function-like macro invocation");
+                    return 0;
+                }
+
+                /* have variadic arguments, expand to something */
+                if (((argc > sym->args.array.count) &&
+                    (argv[sym->args.array.count]->next != argv[argc])))
+                    for (lcc_token_t *t = p; t->next != end; t = t->next)
+                        lcc_token_attach(head, lcc_token_copy(t));
+
+                /* move to next token */
+                p = end;
+                continue;
+            }
+        }
+
         /* concatenation, don't expand the following argument */
         if ((p->type == LCC_TK_OPERATOR) &&
             (p->operator == LCC_OP_CONCAT) &&
@@ -3419,7 +3477,7 @@ static char _lcc_macro_func(
             lcc_token_t *to = argv[n + 1];
             lcc_token_t *from = argv[n]->next;
 
-            /* perform substitution */
+            /* copy directly without expansion */
             while (from != to)
             {
                 lcc_token_attach(head, lcc_token_copy(from));
