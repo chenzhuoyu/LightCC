@@ -5176,7 +5176,7 @@ static char _lcc_check_include(
     lcc_lexer_t *self,
     lcc_token_t **begin,
     lcc_token_t *end,
-    char is_next)
+    char         is_next)
 {
     /* skip "__has_include" */
     lcc_token_t *next;
