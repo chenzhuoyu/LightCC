@@ -801,6 +801,7 @@ typedef char (_lcc_macro_extension_fn)(
 
 typedef struct __lcc_sym_t
 {
+    long ref;
     long flags;
     lcc_token_t *body;
     lcc_string_t *name;
@@ -1082,28 +1083,6 @@ static inline void _lcc_commit_operator(lcc_lexer_t *self, lcc_operator_t operat
 {
     lcc_string_t *src = _lcc_swap_source(self, keep_tail);
     lcc_token_attach(&(self->tokens), lcc_token_from_operator(src, operator));
-}
-
-static void _lcc_sym_free(_lcc_sym_t *self)
-{
-    /* extensions have no body */
-    if (self->body)
-        lcc_token_clear(self->body);
-
-    /* extensions have no variadic argument name either */
-    if (self->vaname)
-        lcc_string_unref(self->vaname);
-
-    /* clear other fields */
-    lcc_string_unref(self->name);
-    lcc_string_array_free(&(self->args));
-}
-
-static void _lcc_file_free(lcc_file_t *self)
-{
-    lcc_string_unref(self->name);
-    lcc_string_unref(self->display);
-    lcc_string_array_free(&(self->lines));
 }
 
 static void _lcc_handle_substate(lcc_lexer_t *self)
@@ -2818,6 +2797,58 @@ static char _lcc_eval_tokens(lcc_lexer_t *self, intmax_t *result)
     }                                                       \
 })
 
+static inline _lcc_sym_t *_lcc_sym_ref(_lcc_sym_t *self)
+{
+    self->ref++;
+    return self;
+}
+
+static inline _lcc_sym_t *_lcc_sym_new(
+    long flags,
+    lcc_token_t *body,
+    lcc_string_t *name,
+    lcc_string_t *vaname,
+    lcc_string_array_t *args,
+    _lcc_macro_extension_fn *ext)
+{
+    _lcc_sym_t *new = malloc(sizeof(_lcc_sym_t));
+    new->ref = 1;
+    new->ext = ext;
+    new->body = body;
+    new->name = name;
+    new->args = *args;
+    new->flags = flags;
+    new->vaname = vaname;
+    return new;
+}
+
+static void _lcc_sym_free(_lcc_sym_t *self)
+{
+    /* decrease reference */
+    if (!(--(self->ref)))
+    {
+        /* extensions have no body */
+        if (self->body)
+            lcc_token_clear(self->body);
+
+        /* extensions have no variadic argument name either */
+        if (self->vaname)
+            lcc_string_unref(self->vaname);
+
+        /* clear other fields */
+        lcc_string_unref(self->name);
+        lcc_string_array_free(&(self->args));
+        free(self);
+    }
+}
+
+static void _lcc_file_free(lcc_file_t *self)
+{
+    lcc_string_unref(self->name);
+    lcc_string_unref(self->display);
+    lcc_string_array_free(&(self->lines));
+}
+
 static inline char _lcc_push_file(lcc_lexer_t *self, lcc_string_t *path, char check_only)
 {
     /* try load the file */
@@ -3552,7 +3583,7 @@ static char _lcc_macro_func(
 static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *end, char *has_defined)
 {
     /* first token */
-    _lcc_sym_t *sym;
+    _lcc_sym_t **sym;
     lcc_token_t *next;
     lcc_token_t *token = begin;
 
@@ -3562,8 +3593,8 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
         /* must be a valid macro */
         if ((token->type != LCC_TK_IDENT) ||                                /* must be an identifier */
             !(lcc_map_get(&(self->psyms), token->ident, (void **)&sym)) ||  /* must be defined */
-            ((sym->flags & LCC_LXDF_DEFINE_SYS) &&                          /* special case of builtin macros */
-             !(strcmp(sym->name->buf, "defined")) &&                        /* actually, "defined" macro */
+            (((*sym)->flags & LCC_LXDF_DEFINE_SYS) &&                       /* special case of builtin macros */
+             !(strcmp((*sym)->name->buf, "defined")) &&                     /* actually, "defined" macro */
              !(self->flags & (LCC_LXDN_IF | LCC_LXDN_ELIF))))               /* only available in "#if" or "#elif" */
         {
             token = token->next;
@@ -3571,16 +3602,16 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
         }
 
         /* call the extension if any */
-        if (sym->ext)
+        if ((*sym)->ext)
         {
-            if (!(sym->ext(self, &token, end)))
+            if (!((*sym)->ext(self, &token, end)))
                 return 0;
             else
                 continue;
         }
 
         /* self-ref macros */
-        if (token->ref || (sym->flags & LCC_LXDF_DEFINE_USING))
+        if (token->ref || ((*sym)->flags & LCC_LXDF_DEFINE_USING))
         {
             token->ref = 1;
             token = token->next;
@@ -3588,14 +3619,14 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
         }
 
         /* object-like macro */
-        if (sym->flags & LCC_LXDF_DEFINE_O)
+        if ((*sym)->flags & LCC_LXDF_DEFINE_O)
         {
             /* replace the name */
             _lcc_macro_disp(
                 &token,
                 &next,
-                sym->body->next,
-                sym->body
+                (*sym)->body->next,
+                (*sym)->body
             );
 
             /* handle concatenation */
@@ -3626,7 +3657,7 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
 
             /* formal argument pointers */
             size_t argp = 0;
-            size_t argcap = sym->args.array.count + 1;
+            size_t argcap = (*sym)->args.array.count + 1;
 
             /* argument buffer */
             lcc_token_t *delim;
@@ -3665,11 +3696,11 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
             /* no arguments when calling empty function-like macros */
             if ((argp == 1) &&
                 (argvp[0]->next == argvp[1]) &&
-                (sym->args.array.count == 0))
+                ((*sym)->args.array.count == 0))
                 argp = 0;
 
             /* not enough arguments */
-            if (argp < sym->args.array.count)
+            if (argp < (*sym)->args.array.count)
             {
                 free(argvp);
                 _lcc_lexer_error(self, "Too few arguments provided to function-like macro invocation");
@@ -3677,8 +3708,8 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
             }
 
             /* too many arguments */
-            if ((argp > sym->args.array.count) &&
-                !(sym->flags & LCC_LXDF_DEFINE_VAR))
+            if ((argp > (*sym)->args.array.count) &&
+                !((*sym)->flags & LCC_LXDF_DEFINE_VAR))
             {
                 free(argvp);
                 _lcc_lexer_error(self, "Too many arguments provided to function-like macro invocation");
@@ -3686,7 +3717,7 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
             }
 
             /* don't expand self-ref macros */
-            if (token->ref || (sym->flags & LCC_LXDF_DEFINE_USING))
+            if (token->ref || ((*sym)->flags & LCC_LXDF_DEFINE_USING))
             {
                 free(argvp);
                 token->ref = 1;
@@ -3695,7 +3726,7 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
             }
 
             /* perform function-like macro expansion */
-            if (!(_lcc_macro_func(self, (head = lcc_token_new()), sym, argp, argvp, has_defined)))
+            if (!(_lcc_macro_func(self, (head = lcc_token_new()), *sym, argp, argvp, has_defined)))
             {
                 free(argvp);
                 lcc_token_clear(head);
@@ -3732,18 +3763,18 @@ static char _lcc_macro_scan(lcc_lexer_t *self, lcc_token_t *begin, lcc_token_t *
 
         /* move one token backward to prevent dangling pointer */
         token = token->prev;
-        sym->flags |= LCC_LXDF_DEFINE_USING;
+        (*sym)->flags |= LCC_LXDF_DEFINE_USING;
 
         /* scan again for nested macros */
         if (!(_lcc_macro_scan(self, token->next, next, has_defined)))
         {
-            sym->flags &= ~LCC_LXDF_DEFINE_USING;
+            (*sym)->flags &= ~LCC_LXDF_DEFINE_USING;
             return 0;
         }
 
         /* move to next token */
         token = next;
-        sym->flags &= ~LCC_LXDF_DEFINE_USING;
+        (*sym)->flags &= ~LCC_LXDF_DEFINE_USING;
     }
 
     /* substitution successful */
@@ -4454,31 +4485,31 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             }
 
             /* create a new symbol */
-            _lcc_sym_t old;
-            _lcc_sym_t sym = {
-                .ext = NULL,
-                .body = lcc_token_new(),
-                .name = self->macro_name,
-                .args = self->macro_args,
-                .flags = self->flags,
-                .vaname = self->macro_vaname,
-            };
+            _lcc_sym_t *old = NULL;
+            _lcc_sym_t *sym = _lcc_sym_new(
+                self->flags,
+                lcc_token_new(),
+                self->macro_name,
+                self->macro_vaname,
+                &(self->macro_args),
+                NULL
+            );
 
             /* make sure we have at least 1 flag set */
-            if (!(sym.flags & LCC_LXDF_DEFINE_F))
-                sym.flags |= LCC_LXDF_DEFINE_O;
+            if (!(sym->flags & LCC_LXDF_DEFINE_F))
+                sym->flags |= LCC_LXDF_DEFINE_O;
 
             /* check for pre-included file */
             if (self->file->flags & LCC_FF_SYS)
-                sym.flags |= LCC_LXDF_DEFINE_SYS;
+                sym->flags |= LCC_LXDF_DEFINE_SYS;
 
             /* move everything remaining to macro body */
             if (self->tokens.next != &(self->tokens))
             {
-                sym.body->prev = self->tokens.prev;
-                sym.body->next = self->tokens.next;
-                self->tokens.prev->next = sym.body;
-                self->tokens.next->prev = sym.body;
+                sym->body->prev = self->tokens.prev;
+                sym->body->next = self->tokens.next;
+                self->tokens.prev->next = sym->body;
+                self->tokens.next->prev = sym->body;
                 self->tokens.prev = &(self->tokens);
                 self->tokens.next = &(self->tokens);
             }
@@ -4488,44 +4519,44 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
                 break;
 
             /* no warnings for system macros overriding user macros */
-            if (sym.flags & LCC_LXDF_DEFINE_SYS)
+            if (sym->flags & LCC_LXDF_DEFINE_SYS)
             {
-                _lcc_sym_free(&old);
+                _lcc_sym_free(old);
                 break;
             }
 
             /* check for built-in macro */
-            if (old.flags & LCC_LXDF_DEFINE_SYS)
+            if (old->flags & LCC_LXDF_DEFINE_SYS)
             {
-                _lcc_sym_free(&old);
+                _lcc_sym_free(old);
                 _lcc_lexer_warning(self, "Redefining builtin macro '%s'", self->macro_name->buf);
                 break;
             }
 
             /* two headers */
-            lcc_token_t *a = sym.body->next;
-            lcc_token_t *b = old.body->next;
+            lcc_token_t *a = sym->body->next;
+            lcc_token_t *b = old->body->next;
 
             /* compare each token */
-            while ((a != sym.body) && (b != old.body) && lcc_token_equals(a, b))
+            while ((a != sym->body) && (b != old->body) && lcc_token_equals(a, b))
             {
                 a = a->next;
                 b = b->next;
             }
 
             /* redefine to same token sequence doesn't considered as "macro redefined" */
-            if ((a != sym.body) ||
-                (b != old.body) ||
-                (sym.flags != old.flags) ||
-                (sym.args.array.count != old.args.array.count))
+            if ((a != sym->body) ||
+                (b != old->body) ||
+                (sym->flags != old->flags) ||
+                (sym->args.array.count != old->args.array.count))
                 _lcc_lexer_warning(self, "Symbol '%s' redefined", self->macro_name->buf);
 
             /* also check argument names */
-            for (size_t i = 0; i < sym.args.array.count; i++)
+            for (size_t i = 0; i < sym->args.array.count; i++)
             {
                 /* get argument name at index `i` */
-                lcc_string_t *n1 = lcc_string_array_get(&(sym.args), i);
-                lcc_string_t *n2 = lcc_string_array_get(&(old.args), i);
+                lcc_string_t *n1 = lcc_string_array_get(&(sym->args), i);
+                lcc_string_t *n2 = lcc_string_array_get(&(old->args), i);
 
                 /* should be the same */
                 if (!(lcc_string_equals(n1, n2)))
@@ -4536,7 +4567,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
             }
 
             /* release the old symbol */
-            _lcc_sym_free(&old);
+            _lcc_sym_free(old);
             break;
         }
 
@@ -4706,6 +4737,13 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         /* "#pragma" directive */
         case LCC_LXDN_PRAGMA:
         {
+            /* extract the pragma name */
+            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing pragma name");
+            lcc_string_t *pragma = _LCC_ENSURE_IDENT(self, token, "Pragma name must be an identifier");
+
+            printf("%s\n", pragma->buf);
+            lcc_token_free(token);
+
             /* doesn't care what tokens given */
             while (self->tokens.next != &(self->tokens))
                 lcc_token_free(self->tokens.next);
@@ -4847,36 +4885,36 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
     }
 
 #define _LCC_ADD_MACRO_EXT_F(ext_name) {                        \
-    _lcc_sym_t __sym_macro_ext_ ## ext_name = {                 \
-        .ext = &__lcc_macro_ext_ ## ext_name,                   \
-        .body = NULL,                                           \
-        .name = lcc_string_from(# ext_name),                    \
-        .args = LCC_STRING_ARRAY_STATIC_INIT,                   \
-        .flags = LCC_LXDF_DEFINE_SYS | LCC_LXDF_DEFINE_F,       \
-        .vaname = NULL,                                         \
-    };                                                          \
+    _lcc_sym_t *__sym_macro_ext_ ## ext_name = _lcc_sym_new(    \
+        LCC_LXDF_DEFINE_SYS | LCC_LXDF_DEFINE_F,                \
+        NULL,                                                   \
+        lcc_string_from(# ext_name),                            \
+        NULL,                                                   \
+        &LCC_STRING_ARRAY_STATIC_INIT,                          \
+        &__lcc_macro_ext_ ## ext_name                           \
+    );                                                          \
                                                                 \
     lcc_map_set(                                                \
         &(self->psyms),                                         \
-        __sym_macro_ext_ ## ext_name.name,                      \
+        __sym_macro_ext_ ## ext_name->name,                     \
         NULL,                                                   \
         &__sym_macro_ext_ ## ext_name                           \
     );                                                          \
 }
 
 #define _LCC_ADD_MACRO_EXT_O(ext_name) {                        \
-    _lcc_sym_t __sym_macro_ext_ ## ext_name = {                 \
-        .ext = &__lcc_macro_ext_ ## ext_name,                   \
-        .body = NULL,                                           \
-        .name = lcc_string_from(# ext_name),                    \
-        .args = LCC_STRING_ARRAY_STATIC_INIT,                   \
-        .flags = LCC_LXDF_DEFINE_SYS | LCC_LXDF_DEFINE_O,       \
-        .vaname = NULL,                                         \
-    };                                                          \
+    _lcc_sym_t *__sym_macro_ext_ ## ext_name = _lcc_sym_new(    \
+        LCC_LXDF_DEFINE_SYS | LCC_LXDF_DEFINE_O,                \
+        NULL,                                                   \
+        lcc_string_from(# ext_name),                            \
+        NULL,                                                   \
+        &LCC_STRING_ARRAY_STATIC_INIT,                          \
+        &__lcc_macro_ext_ ## ext_name                           \
+    );                                                          \
                                                                 \
     lcc_map_set(                                                \
         &(self->psyms),                                         \
-        __sym_macro_ext_ ## ext_name.name,                      \
+        __sym_macro_ext_ ## ext_name->name,                     \
         NULL,                                                   \
         &__sym_macro_ext_ ## ext_name                           \
     );                                                          \
@@ -5363,14 +5401,20 @@ static inline char _lcc_check_line_cont(lcc_file_t *fp, lcc_string_t *line)
 
 static void _lcc_psym_dtor(lcc_map_t *self, void *value, void *data)
 {
-    _lcc_sym_t *sym = value;
-    _lcc_sym_free(sym);
+    _lcc_sym_t **sym = value;
+    _lcc_sym_free(*sym);
 }
 
 static void _lcc_file_dtor(lcc_array_t *self, void *item, void *data)
 {
     lcc_file_t *fp = item;
     _lcc_file_free(fp);
+}
+
+static void _lcc_sstack_dtor(lcc_map_t *self, void *value, void *data)
+{
+    lcc_array_t *stack = value;
+    lcc_array_free(stack);
 }
 
 void lcc_lexer_free(lcc_lexer_t *self)
@@ -5390,6 +5434,7 @@ void lcc_lexer_free(lcc_lexer_t *self)
 
     /* clear directive related tables */
     lcc_map_free(&(self->psyms));
+    lcc_map_free(&(self->sym_stacks));
     lcc_string_array_free(&(self->sccs_msgs));
 
     /* clear complex state buffers */
@@ -5420,10 +5465,25 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
         .display = lcc_string_from("<define>"),
     };
 
+    /* pre-defined symbols */
+    lcc_map_init(
+        &(self->psyms),
+        sizeof(_lcc_sym_t *),
+        _lcc_psym_dtor,
+        NULL
+    );
+
     /* complex structures */
-    lcc_map_init(&(self->psyms), sizeof(_lcc_sym_t), _lcc_psym_dtor, NULL);
     lcc_array_init(&(self->files), sizeof(lcc_file_t), _lcc_file_dtor, NULL);
     lcc_array_init(&(self->eval_stack), sizeof(_lcc_val_t), NULL, NULL);
+
+    /* saved tokens for "#pragma push_macro/pop_macro" */
+    lcc_map_init(
+        &(self->sym_stacks),
+        sizeof(lcc_array_t),
+        _lcc_sstack_dtor,
+        NULL
+    );
 
     /* feature sets */
     lcc_set_init(&(self->builtins));
@@ -5825,7 +5885,7 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                     break;
 
                 /* get the newly accepted token */
-                _lcc_sym_t *sym;
+                _lcc_sym_t **sym;
                 lcc_token_t *token = self->tokens.prev;
 
                 /* check for macro substitution */
@@ -5834,7 +5894,7 @@ lcc_token_t *lcc_lexer_advance(lcc_lexer_t *self)
                      (lcc_map_get(&(self->psyms), token->ident, (void **)&sym)))    /* which is also a macro name */
                 {
                     /* function-like macro, expect a "(" operator */
-                    if (sym->flags & LCC_LXDF_DEFINE_F)
+                    if ((*sym)->flags & LCC_LXDF_DEFINE_F)
                     {
                         self->flags |= LCC_LXF_SUBST;
                         self->subst_level = 0;

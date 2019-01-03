@@ -415,6 +415,7 @@ typedef struct _lcc_lexer_t
     /* complex state buffers */
     size_t cond_level;
     size_t subst_level;
+    lcc_map_t sym_stacks;
     lcc_array_t eval_stack;
     lcc_string_t *macro_name;
     lcc_string_t *macro_vaname;
