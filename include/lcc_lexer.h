@@ -125,6 +125,7 @@ typedef enum _lcc_token_type_t
 {
     LCC_TK_EOF,
     LCC_TK_IDENT,
+    LCC_TK_PRAGMA,
     LCC_TK_LITERAL,
     LCC_TK_KEYWORD,
     LCC_TK_OPERATOR,
@@ -166,18 +167,26 @@ typedef struct _lcc_token_t
         lcc_literal_t   literal;
         lcc_keyword_t   keyword;
         lcc_operator_t  operator;
+
+        struct
+        {
+            lcc_string_t        *name;
+            struct _lcc_token_t *args;
+        } pragma;
     };
 } lcc_token_t;
 
 void lcc_token_free(lcc_token_t *self);
 void lcc_token_init(lcc_token_t *self);
 void lcc_token_clear(lcc_token_t *self);
+void lcc_token_flush(lcc_token_t *self);
 void lcc_token_attach(lcc_token_t *self, lcc_token_t *next);
 char lcc_token_equals(lcc_token_t *self, lcc_token_t *other);
 
 lcc_token_t *lcc_token_new(void);
 lcc_token_t *lcc_token_copy(lcc_token_t *self);
 lcc_token_t *lcc_token_detach(lcc_token_t *self);
+lcc_token_t *lcc_token_pragma(lcc_string_t *name, lcc_token_t *args);
 
 lcc_token_t *lcc_token_from_ident(lcc_string_t *src, lcc_string_t *ident);
 lcc_token_t *lcc_token_from_keyword(lcc_string_t *src, lcc_keyword_t keyword);
@@ -424,6 +433,8 @@ typedef struct _lcc_lexer_t
     /* current file info */
     size_t col;
     size_t row;
+    size_t curr_col;
+    size_t curr_row;
     lcc_string_t *fname;
     lcc_string_t *source;
 

@@ -20,8 +20,26 @@ int main()
     int f = 0;
     while ((token = lcc_lexer_next(&lexer)))
     {
-        if (token->type == LCC_TK_OPERATOR &&
-            token->operator == LCC_OP_LBLOCK)
+        if (token->type == LCC_TK_PRAGMA)
+        {
+            if (f)
+            {
+                f = 0;
+                n -= 4;
+                printf("%*s} ", n, "");
+            }
+
+            if (c)
+                printf("\n");
+
+            c = 0;
+            n = 0;
+            lcc_string_t *s = lcc_token_str(token);
+            printf("%s\n", s->buf);
+            lcc_string_unref(s);
+        }
+        else if (token->type == LCC_TK_OPERATOR &&
+                 token->operator == LCC_OP_LBLOCK)
         {
             if (f)
             {

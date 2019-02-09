@@ -27,6 +27,8 @@ lcc_string_t *lcc_string_from_format(const char *fmt, ...) __attribute__((format
 lcc_string_t *lcc_string_from_format_va(const char *fmt, va_list vargs);
 
 void lcc_string_append(lcc_string_t *self, lcc_string_t *other);
+void lcc_string_append_unref(lcc_string_t *self, lcc_string_t *other);
+
 void lcc_string_append_from(lcc_string_t *self, const char *other);
 void lcc_string_append_from_size(lcc_string_t *self, const char *other, size_t size);
 

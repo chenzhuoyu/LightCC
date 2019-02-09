@@ -204,6 +204,12 @@ void lcc_string_append(lcc_string_t *self, lcc_string_t *other)
     lcc_string_append_from_size(self, other->buf, other->len);
 }
 
+void lcc_string_append_unref(lcc_string_t *self, lcc_string_t *other)
+{
+    lcc_string_append_from_size(self, other->buf, other->len);
+    lcc_string_unref(other);
+}
+
 void lcc_string_append_from(lcc_string_t *self, const char *other)
 {
     size_t len = strlen(other);

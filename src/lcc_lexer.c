@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <lcc_lexer.h>
 
 #include "lcc_lexer.h"
 
@@ -132,6 +133,13 @@ void lcc_token_free(lcc_token_t *self)
                 break;
             }
 
+            case LCC_TK_PRAGMA:
+            {
+                lcc_token_clear(self->pragma.args);
+                lcc_string_unref(self->pragma.name);
+                break;
+            }
+
             case LCC_TK_LITERAL:
             {
                 switch (self->literal.type)
@@ -186,12 +194,14 @@ void lcc_token_init(lcc_token_t *self)
 
 void lcc_token_clear(lcc_token_t *self)
 {
-    /* clear all tokens on the chain */
+    lcc_token_flush(self);
+    lcc_token_free(self);
+}
+
+void lcc_token_flush(lcc_token_t *self)
+{
     while (self->next != self)
         lcc_token_free(self->next);
-
-    /* and the header node */
-    lcc_token_free(self);
 }
 
 void lcc_token_attach(lcc_token_t *self, lcc_token_t *tail)
@@ -220,6 +230,33 @@ char lcc_token_equals(lcc_token_t *self, lcc_token_t *other)
         case LCC_TK_KEYWORD : return self->keyword == other->keyword;
         case LCC_TK_OPERATOR: return self->operator == other->operator;
         case LCC_TK_IDENT   : return lcc_string_equals(self->ident, other->ident);
+
+        /* pragmas */
+        case LCC_TK_PRAGMA:
+        {
+            /* check for names */
+            if (!(lcc_string_equals(self->pragma.name, other->pragma.name)))
+                return 0;
+
+            /* token lists */
+            lcc_token_t *p = self->pragma.args->next;
+            lcc_token_t *q = other->pragma.args->next;
+
+            /* every token must equals */
+            while ((p != self->pragma.args) && (q != other->pragma.args))
+            {
+                /* check for every token */
+                if (!(lcc_token_equals(p, q)))
+                    return 0;
+
+                /* move to next token */
+                p = p->next;
+                q = q->next;
+            }
+
+            /* length must also equals */
+            return (p == self->pragma.args) && (q == other->pragma.args);
+        }
 
         /* literals */
         case LCC_TK_LITERAL:
@@ -282,6 +319,25 @@ lcc_token_t *lcc_token_copy(lcc_token_t *self)
             break;
         }
 
+        /* pragmas */
+        case LCC_TK_PRAGMA:
+        {
+            lcc_token_t *p = lcc_token_new();
+            lcc_token_t *q = self->pragma.args->next;
+
+            /* copy every args */
+            while (q != self->pragma.args)
+            {
+                lcc_token_attach(p, lcc_token_copy(q));
+                q = q->next;
+            }
+
+            /* create a new list and copy pragma name */
+            clone->pragma.args = p;
+            clone->pragma.name = lcc_string_copy(self->pragma.name);
+            break;
+        }
+
         /* literals */
         case LCC_TK_LITERAL:
         {
@@ -340,6 +396,31 @@ lcc_token_t *lcc_token_detach(lcc_token_t *self)
     self->next->prev = self->prev;
     self->prev = self;
     self->next = self;
+    return self;
+}
+
+lcc_token_t *lcc_token_pragma(lcc_string_t *name, lcc_token_t *args)
+{
+    /* `repr` header */
+    lcc_token_t *p = args->next;
+    lcc_token_t *self = malloc(sizeof(lcc_token_t));
+    lcc_string_t *psrc = lcc_string_from_format("#pragma %s", name->buf);
+
+    /* convert every tokens */
+    while (p != args)
+    {
+        lcc_string_append(psrc, p->src);
+        p = p->next;
+    }
+
+    /* assembled back to "#pragma" directive */
+    self->ref = 0;
+    self->src = psrc;
+    self->prev = self;
+    self->next = self;
+    self->type = LCC_TK_PRAGMA;
+    self->pragma.name = name;
+    self->pragma.args = args;
     return self;
 }
 
@@ -592,11 +673,31 @@ lcc_string_t *lcc_token_str(lcc_token_t *self)
 {
     switch (self->type)
     {
+        /* basic tokens and literals */
         case LCC_TK_EOF      : return lcc_string_from("<EOF>");
         case LCC_TK_IDENT    : return lcc_string_ref(self->ident);
         case LCC_TK_LITERAL  : return lcc_string_ref(self->literal.raw);
         case LCC_TK_KEYWORD  : return lcc_string_from(lcc_token_kw_name(self->keyword));
         case LCC_TK_OPERATOR : return lcc_string_from(lcc_token_op_name(self->operator));
+
+        /* pragmas */
+        case LCC_TK_PRAGMA:
+        {
+            /* `repr` header */
+            lcc_token_t *p = self->pragma.args->next;
+            lcc_string_t *str = lcc_string_from_format("#pragma %s", self->pragma.name->buf);
+
+            /* convert every tokens */
+            while (p != self->pragma.args)
+            {
+                lcc_string_append_from(str, " ");
+                lcc_string_append_unref(str, lcc_token_str(p));
+                p = p->next;
+            }
+
+            /* assembled back to "#pragma" directive */
+            return str;
+        }
     }
 
     abort();
@@ -606,11 +707,34 @@ lcc_string_t *lcc_token_repr(lcc_token_t *self)
 {
     switch (self->type)
     {
+        /* basic tokens */
         case LCC_TK_EOF      : return lcc_string_from("{EOF}");
         case LCC_TK_IDENT    : return lcc_string_from_format("{ID:%s}", self->ident->buf);
         case LCC_TK_KEYWORD  : return lcc_string_from_format("{KW:%s}", lcc_token_kw_name(self->keyword));
         case LCC_TK_OPERATOR : return lcc_string_from_format("{OP:%s}", lcc_token_op_name(self->operator));
-        case LCC_TK_LITERAL  :
+
+        /* pragmas */
+        case LCC_TK_PRAGMA:
+        {
+            /* `repr` header */
+            lcc_token_t *p = self->pragma.args->next;
+            lcc_string_t *repr = lcc_string_from_format("{PRAGMA:%s", self->pragma.name->buf);
+
+            /* convert every tokens */
+            while (p != self->pragma.args)
+            {
+                lcc_string_append_from(repr, ",");
+                lcc_string_append_unref(repr, lcc_token_repr(p));
+                p = p->next;
+            }
+
+            /* append the tail "}" */
+            lcc_string_append_from(repr, "}");
+            return repr;
+        }
+
+        /* literals */
+        case LCC_TK_LITERAL:
         {
             switch (self->literal.type)
             {
@@ -964,8 +1088,8 @@ static char _lcc_error_default(
         "* %s: (%s:%zd:%zd) %s\n",
         type == LCC_LXET_ERROR ? "ERROR" : "WARNING",
         file->buf,
-        row + 1,
-        col + 1,
+        row,
+        col,
         message->buf
     );
 
@@ -2581,6 +2705,15 @@ static char _lcc_eval_factor(lcc_lexer_t *self, intmax_t *result, lcc_token_t **
             break;
         }
 
+        /* simple "#pragma" directives cannot appear here since
+         * directives cannot nesting inside another directive, so if
+         * this happens, it must be expanded from "_Pragma" psudo-macro */
+        case LCC_TK_PRAGMA:
+        {
+            _lcc_lexer_error(self, "'_Pragma' is not allowed here");
+            return 0;
+        }
+
         /* literal constant */
         case LCC_TK_LITERAL:
         {
@@ -2724,6 +2857,19 @@ static char _lcc_eval_tokens(lcc_lexer_t *self, intmax_t *result)
                                                             \
     /* extract the token */                                 \
     self->tokens.next;                                      \
+})
+
+#define _LCC_DETACH_TOKEN(self, efmt, ...)                  \
+({                                                          \
+    /* should have at least 1 argument */                   \
+    if (self->tokens.next == &(self->tokens))               \
+    {                                                       \
+        _lcc_lexer_error(self, efmt, ## __VA_ARGS__);       \
+        return;                                             \
+    }                                                       \
+                                                            \
+    /* detach the token */                                  \
+    lcc_token_detach(self->tokens.next);                    \
 })
 
 #define _LCC_ENSURE_IDENT(self, token, efmt, ...)           \
@@ -2878,6 +3024,16 @@ static inline char _lcc_file_exists(lcc_string_t *path)
     return stat(path->buf, &st) == 0;
 }
 
+static inline void _lcc_move_tokens(lcc_token_t *to, lcc_token_t *from)
+{
+    to->prev = from->prev;
+    to->next = from->next;
+    to->prev->next = to;
+    to->next->prev = to;
+    from->prev = from;
+    from->next = from;
+}
+
 static inline lcc_string_t *_lcc_path_concat(lcc_string_t *base, lcc_string_t *name)
 {
     /* `name` is an absolute path */
@@ -2918,16 +3074,15 @@ static inline lcc_string_t *_lcc_make_message(lcc_lexer_t *self)
     }
 
     /* message string */
-    lcc_string_t *p;
+    lcc_token_t *p;
     lcc_string_t *s = lcc_string_new(0);
 
     /* concat each token */
-    while (self->tokens.next != &(self->tokens))
+    while ((p = self->tokens.next) != &(self->tokens))
     {
-        lcc_string_append(s, (p = lcc_token_str(self->tokens.next)));
+        lcc_string_append_unref(s, lcc_token_str(p));
         lcc_string_append_from(s, " ");
-        lcc_string_unref(p);
-        lcc_token_free(self->tokens.next);
+        lcc_token_free(p);
     }
 
     /* remove the last space */
@@ -4439,6 +4594,12 @@ static void _lcc_handle_directive(lcc_lexer_t *self)
 
 static void _lcc_commit_directive(lcc_lexer_t *self)
 {
+    /* directives may yield tokens (for example, "#pragma") */
+    lcc_token_t yields = {
+        .prev = &yields,
+        .next = &yields,
+    };
+
     /* check directive type */
     switch (self->flags & LCC_LXDN_MASK)
     {
@@ -4505,14 +4666,7 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
 
             /* move everything remaining to macro body */
             if (self->tokens.next != &(self->tokens))
-            {
-                sym->body->prev = self->tokens.prev;
-                sym->body->next = self->tokens.next;
-                self->tokens.prev->next = sym->body;
-                self->tokens.next->prev = sym->body;
-                self->tokens.prev = &(self->tokens);
-                self->tokens.next = &(self->tokens);
-            }
+                _lcc_move_tokens(sym->body, &(self->tokens));
 
             /* add to predefined symbols */
             if (!(lcc_map_set(&(self->psyms), self->macro_name, &old, &sym)))
@@ -4738,17 +4892,17 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         case LCC_LXDN_PRAGMA:
         {
             /* extract the pragma name */
-            lcc_token_t *token = _LCC_FETCH_TOKEN(self, "Missing pragma name");
+            lcc_token_t *head = lcc_token_new();
+            lcc_token_t *token = _LCC_DETACH_TOKEN(self, "Missing pragma name");
             lcc_string_t *pragma = _LCC_ENSURE_IDENT(self, token, "Pragma name must be an identifier");
 
-            printf("%s\n", pragma->buf);
+            /* copy all the arguments if any */
+            if (self->tokens.next != &(self->tokens))
+                _lcc_move_tokens(head, &(self->tokens));
+
+            /* yields a "pragma" token */
+            lcc_token_attach(&yields, lcc_token_pragma(lcc_string_ref(pragma), head));
             lcc_token_free(token);
-
-            /* doesn't care what tokens given */
-            while (self->tokens.next != &(self->tokens))
-                lcc_token_free(self->tokens.next);
-
-            // TODO: impelemnt this
             break;
         }
 
@@ -4854,6 +5008,10 @@ static void _lcc_commit_directive(lcc_lexer_t *self)
         _lcc_lexer_error(self, "Redundent directive parameter");
         return;
     }
+
+    /* directives may yield tokens, append those tokens */
+    if (yields.next != &yields)
+        _lcc_move_tokens(&(self->tokens), &yields);
 
     /* reset state and sub-state */
     self->state = LCC_LX_STATE_SHIFT;
@@ -4974,12 +5132,18 @@ static inline lcc_string_t *_lcc_extract_ident(
         return NULL;
     }
 
-    /* check for identifier type and ending ")" */
-    if ((n2->type != LCC_TK_IDENT) ||
-        (n3->type != LCC_TK_OPERATOR) ||
+    /* check for identifier type */
+    if (n2->type != LCC_TK_IDENT)
+    {
+        _lcc_lexer_error(self, "'%s' requires a single parenthesized identifier", name);
+        return NULL;
+    }
+
+    /* check for ending ")" */
+    if ((n3->type != LCC_TK_OPERATOR) ||
         (n3->operator != LCC_OP_RBRACKET))
     {
-        _lcc_lexer_error(self, "Builtin feature check macro requires a single parenthesized identifier");
+        _lcc_lexer_error(self, "Missing ')' after identifier");
         return NULL;
     }
 
@@ -4993,6 +5157,71 @@ static inline lcc_string_t *_lcc_extract_ident(
     lcc_token_free(n2);
     lcc_token_free(n3);
     return ident;
+}
+
+static inline lcc_string_t *_lcc_extract_literal_str(
+    lcc_lexer_t  *self,
+    lcc_token_t **begin,
+    lcc_token_t  *end,
+    lcc_token_t **tail,
+    const char   *name)
+{
+    /* token sequences */
+    lcc_token_t *n0 = *begin;
+    lcc_token_t *n1 = n0->next;
+    lcc_token_t *n2 = n1->next;
+    lcc_token_t *n3 = n2->next;
+    lcc_string_t *result;
+
+    /* the first token must be an identifier */
+    if (n0->type != LCC_TK_IDENT)
+    {
+        fprintf(stderr, "*** FATAL: non-identifier macro\n");
+        abort();
+    }
+
+    /* check for beginning "(" */
+    if ((n1 == end) ||
+        (n1->type != LCC_TK_OPERATOR) ||
+        (n1->operator != LCC_OP_LBRACKET))
+    {
+        _lcc_lexer_error(self, "Missing '(' after '%s'", name);
+        return NULL;
+    }
+
+    /* check for EOL */
+    if ((n2 == end) || (n3 == end))
+    {
+        _lcc_lexer_error(self, "Unterminated function-like macro invocation");
+        return NULL;
+    }
+
+    /* check for string literal */
+    if ((n2->type != LCC_TK_LITERAL) ||
+        (n2->literal.type != LCC_LT_STRING))
+    {
+        _lcc_lexer_error(self, "'%s' takes a parenthesized string literal", name);
+        return NULL;
+    }
+
+    /* check for ending ")" */
+    if ((n3->type != LCC_TK_OPERATOR) ||
+        (n3->operator != LCC_OP_RBRACKET))
+    {
+        _lcc_lexer_error(self, "Missing ')' after string literal");
+        return NULL;
+    }
+
+    /* store the tail and detach the token */
+    *tail = *begin = n3->next;
+    result = lcc_string_ref(n2->literal.raw);
+
+    /* release tokens */
+    lcc_token_free(n0);
+    lcc_token_free(n1);
+    lcc_token_free(n2);
+    lcc_token_free(n3);
+    return result;
 }
 
 /** Object-like built-in macros **/
@@ -5150,7 +5379,7 @@ _LCC_MACRO_EXT(defined)
             break;
         }
 
-            /* otherwise it's an error */
+        /* otherwise it's an error */
         default:
         _lcc_factor_not_ident:
         {
@@ -5185,6 +5414,147 @@ _LCC_MACRO_EXT(defined)
     /* replace the old token */
     _lcc_range_subst(begin, token, lcc_token_from_int(lcc_map_get(&(self->psyms), ident, NULL)));
     lcc_string_unref(ident);
+    return 1;
+}
+
+_LCC_MACRO_EXT(_Pragma)
+{
+    /* extract the pragma literal */
+    lcc_token_t *tail;
+    lcc_string_t *value = _lcc_extract_literal_str(self, begin, end, &tail, "_Pragma");
+
+    /* check for errors */
+    if (!value)
+        return 0;
+
+    /* make a copy of the string to translate '\\' and '\"' */
+    size_t n = 0;
+    lcc_string_t *pragma = lcc_string_copy(value);
+
+    /* remove '"' on either side */
+    lcc_string_unref(value);
+    pragma->buf[--pragma->len] = 0;
+    memmove(pragma->buf, pragma->buf + 1, pragma->len--);
+
+    /* buffer pointers */
+    char *p = pragma->buf;
+    char *q = pragma->buf;
+
+    /* translate until source string ends */
+    while (*p)
+    {
+        /* not an escape character, just copy as is */
+        if (*p != '\\')
+        {
+            n++;
+            *q++ = *p++;
+        }
+
+        /* otherwise, check the next character */
+        else
+        {
+            switch (*++p)
+            {
+                /* '_Pragma' only accepts '\\' and '\"' as escape sequences */
+                case '\\':
+                case '\"':
+                {
+                    n++;
+                    *q++ = *p++;
+                    break;
+                }
+
+                /* other characters are preserved along with the '\\' */
+                default:
+                {
+                    n++;
+                    *q++ = '\\';
+                    *q++ = *p++;
+                    break;
+                }
+            }
+        }
+
+        /* "CR" or "LF" should not appear in pragma, otherwise it's a fatal error */
+        if ((q[-1] == '\r') || (q[-1] == '\n'))
+        {
+            fprintf(stderr, "*** FATAL: new-line in pragma\n");
+            abort();
+        }
+    }
+
+    /* terminate the pragma string */
+    *q = 0;
+    pragma->len = n;
+
+    /* dummy file for parsing pragma */
+    lcc_file_t file = {
+        .col = 0,
+        .row = 0,
+        .name = lcc_string_from("<pragma>"),
+        .flags = LCC_FF_SYS,
+        .lines = LCC_STRING_ARRAY_STATIC_INIT,
+        .offset = 1,
+        .display = lcc_string_from("<pragma>"),
+    };
+
+    /* only one line in the source */
+    lcc_string_array_append(&(file.lines), lcc_string_from_format("#pragma %s", pragma->buf));
+    lcc_string_unref(pragma);
+
+    /* buffer to save the current tokens */
+    lcc_file_t *fp;
+    lcc_token_t buffer = {
+        .prev = &buffer,
+        .next = &buffer,
+    };
+
+    /* move everything into buffer area */
+    if (self->tokens.next != &(self->tokens))
+        _lcc_move_tokens(&buffer, &(self->tokens));
+
+    /* load to file stack */
+    lcc_array_append(&(self->files), &file);
+    self->file = fp = lcc_array_top(&(self->files));
+
+    /* parse the pragma */
+    if (!(lcc_lexer_advance(self)))
+        return 0;
+
+    /* the file should've popped */
+    if (fp == self->file)
+    {
+        fprintf(stderr, "*** FATAL: pragma takes more than one advancing\n");
+        abort();
+    }
+
+    /* save the newly generated tokens */
+    lcc_token_t head = {
+        .prev = &head,
+        .next = &head,
+    };
+
+    /* move everything into buffer area */
+    if (self->tokens.next != &(self->tokens))
+        _lcc_move_tokens(&head, &(self->tokens));
+
+    /* restore original tokens */
+    if (buffer.next != &buffer)
+        _lcc_move_tokens(&(self->tokens), &buffer);
+
+    /* no new tokens available */
+    if (head.next == &head)
+        return 1;
+
+    /* at most 1 token is allowed */
+    if (head.next->next != &head)
+    {
+        fprintf(stderr, "*** FATAL: pragma yields multiple tokens\n");
+        abort();
+    }
+
+    /* substitute in the new token */
+    lcc_token_attach(*begin, lcc_token_detach(head.next));
     return 1;
 }
 
@@ -5574,6 +5944,7 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
 
     /* built-in function-like extensions */
     _LCC_ADD_MACRO_EXT_F(defined);
+    _LCC_ADD_MACRO_EXT_F(_Pragma);
     _LCC_ADD_MACRO_EXT_F(__has_include);
     _LCC_ADD_MACRO_EXT_F(__has_include_next);
 
