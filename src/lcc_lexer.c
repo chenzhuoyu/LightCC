@@ -575,7 +575,7 @@ const char *lcc_token_kw_name(lcc_keyword_t value)
         case LCC_KW_BREAK     : return "break";
         case LCC_KW_CASE      : return "case";
         case LCC_KW_CHAR      : return "char";
-        case LCC_KW_COMPLEX   : return "complex";
+        case LCC_KW_COMPLEX   : return "_Complex";
         case LCC_KW_CONST     : return "const";
         case LCC_KW_CONTINUE  : return "continue";
         case LCC_KW_DEFAULT   : return "default";
