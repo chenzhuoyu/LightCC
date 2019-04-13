@@ -5740,8 +5740,8 @@ _LCC_MACRO_EXT(__has_include_next)
  * the preprocessor does not know the name of the current function
  * they will be replaced by the actual function name during syntax parsing
  */
-_LCC_MACRO_EXT_P(__func__);
-_LCC_MACRO_EXT_P(__FUNCTION__);
+_LCC_MACRO_EXT_P(__func__)
+_LCC_MACRO_EXT_P(__FUNCTION__)
 
 static inline char _lcc_check_drop_char(lcc_lexer_t *self)
 {
@@ -5933,29 +5933,29 @@ char lcc_lexer_init(lcc_lexer_t *self, lcc_file_t file)
 #undef _COPY_NAME
 
     /* built-in object-like extensions */
-    _LCC_ADD_MACRO_EXT_O(__FILE__);
-    _LCC_ADD_MACRO_EXT_O(__LINE__);
-    _LCC_ADD_MACRO_EXT_O(__DATE__);
-    _LCC_ADD_MACRO_EXT_O(__TIME__);
-    _LCC_ADD_MACRO_EXT_O(__COUNTER__);
-    _LCC_ADD_MACRO_EXT_O(__TIMESTAMP__);
-    _LCC_ADD_MACRO_EXT_O(__BASE_FILE__);
-    _LCC_ADD_MACRO_EXT_O(__INCLUDE_LEVEL__);
+    _LCC_ADD_MACRO_EXT_O(__FILE__)
+    _LCC_ADD_MACRO_EXT_O(__LINE__)
+    _LCC_ADD_MACRO_EXT_O(__DATE__)
+    _LCC_ADD_MACRO_EXT_O(__TIME__)
+    _LCC_ADD_MACRO_EXT_O(__COUNTER__)
+    _LCC_ADD_MACRO_EXT_O(__TIMESTAMP__)
+    _LCC_ADD_MACRO_EXT_O(__BASE_FILE__)
+    _LCC_ADD_MACRO_EXT_O(__INCLUDE_LEVEL__)
 
     /* built-in function-like extensions */
-    _LCC_ADD_MACRO_EXT_F(defined);
-    _LCC_ADD_MACRO_EXT_F(_Pragma);
-    _LCC_ADD_MACRO_EXT_F(__has_include);
-    _LCC_ADD_MACRO_EXT_F(__has_include_next);
+    _LCC_ADD_MACRO_EXT_F(defined)
+    _LCC_ADD_MACRO_EXT_F(_Pragma)
+    _LCC_ADD_MACRO_EXT_F(__has_include)
+    _LCC_ADD_MACRO_EXT_F(__has_include_next)
 
     /* built-in feature testing macros */
-    _LCC_ADD_MACRO_EXT_F(__has_builtin);
-    _LCC_ADD_MACRO_EXT_F(__has_feature);
-    _LCC_ADD_MACRO_EXT_F(__has_extension);
+    _LCC_ADD_MACRO_EXT_F(__has_builtin)
+    _LCC_ADD_MACRO_EXT_F(__has_feature)
+    _LCC_ADD_MACRO_EXT_F(__has_extension)
 
     /* pseudo-macro "__func__" and "__FUNCTION__" */
-    _LCC_ADD_MACRO_EXT_O(__func__);
-    _LCC_ADD_MACRO_EXT_O(__FUNCTION__);
+    _LCC_ADD_MACRO_EXT_O(__func__)
+    _LCC_ADD_MACRO_EXT_O(__FUNCTION__)
     return 1;
 }
 
